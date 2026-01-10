@@ -1,0 +1,53 @@
+# Binaries
+/recurse
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Beads local files (database and daemon)
+.beads/beads.db
+.beads/beads.db-*
+.beads/bd.sock
+.beads/bd.pipe
+.beads/.exclusive-lock
+
+# Recurse local files
+.recurse/memory.db
+.recurse/memory.db-*
+.recurse/*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+ENV/
+
+# Temporary files
+/tmp/
+*.tmp
