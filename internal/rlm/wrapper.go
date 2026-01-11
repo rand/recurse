@@ -224,29 +224,58 @@ Context has been externalized to Python variables. Use code execution to explore
 
 	sb.WriteString(`
 ## Available Functions
-- peek(var, start, end) - View slice of context
-- grep(var, pattern) - Search for patterns
-- partition(var, n) - Split into n chunks
-- llm_call(prompt, context, model) - Sub-LLM call
+
+### Core Operations
+- peek(ctx, start, end, by_lines=False) - View slice of context
+- grep(ctx, pattern, context_lines=0) - Search for patterns with optional context
+- partition(ctx, n=4, overlap=0) - Split into n chunks
+- partition_by_lines(ctx, n=4) - Split by lines (respects line boundaries)
+- extract_functions(ctx, language) - Extract function definitions from code
+
+### LLM Operations
+- llm_call(prompt, context, model) - Single sub-LLM call
+- llm_batch(prompts, contexts, model) - Batch sub-LLM calls
+- summarize(ctx, max_length=500, focus=None) - Summarize context with LLM
+- map_reduce(ctx, map_prompt, reduce_prompt, n_chunks=4) - Map-reduce pattern
+- find_relevant(ctx, query, top_k=5) - Find relevant sections for a query
+
+### Utilities
+- count_tokens_approx(text) - Estimate token count
 - FINAL(response) - Return final answer
 
-## Example Workflow
+## Example Workflows
+
+### Simple Analysis
 ` + "```python" + `
 # Explore the context first
 preview = peek(file_content, 0, 2000)
-
-# Search for relevant parts
 matches = grep(file_content, "function|class")
+result = llm_call("Analyze this code", file_content, "balanced")
+FINAL(result)
+` + "```" + `
 
-# For complex tasks, partition and process
+### Large Context with Map-Reduce
+` + "```python" + `
+# For large contexts, use map-reduce pattern
 if count_tokens_approx(file_content) > 10000:
-    chunks = partition(file_content, 4)
-    summaries = [llm_call("Summarize", c, "fast") for c in chunks]
-    result = "\n".join(summaries)
+    result = map_reduce(
+        file_content,
+        map_prompt="List all functions and their purpose",
+        reduce_prompt="Combine into a comprehensive API overview",
+        n_chunks=4
+    )
 else:
     result = llm_call("Analyze this code", file_content, "balanced")
-
 FINAL(result)
+` + "```" + `
+
+### Focused Search
+` + "```python" + `
+# Find relevant sections for a specific query
+relevant = find_relevant(codebase, "error handling")
+context = "\n\n".join([r['section'] for r in relevant])
+analysis = llm_call("Analyze the error handling patterns", context, "balanced")
+FINAL(analysis)
 ` + "```" + `
 `)
 

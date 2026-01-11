@@ -265,6 +265,144 @@ def count_tokens_approx(text: str) -> int:
     return len(text) // 4
 
 
+def summarize(ctx, max_length: int = 500, focus: str = None, model: str = "fast") -> str:
+    """
+    Summarize context using an LLM call.
+
+    This is a key emergent strategy for compressing information
+    before passing to higher-level reasoning.
+
+    Args:
+        ctx: Context string or RLMContext object to summarize
+        max_length: Approximate maximum length of summary in characters
+        focus: Optional focus area for the summary (e.g., "API endpoints", "error handling")
+        model: Model tier to use - 'fast' recommended for summaries
+
+    Returns:
+        A string summary of the context
+
+    Example:
+        >>> summary = summarize(large_file_content, focus="main function logic")
+        >>> answer = llm_call("Based on this summary, what's the purpose?", summary)
+    """
+    content = ctx.content if isinstance(ctx, RLMContext) else str(ctx)
+
+    prompt = f"Summarize the following content in approximately {max_length} characters."
+    if focus:
+        prompt += f" Focus on: {focus}."
+    prompt += " Be concise and preserve key details."
+
+    return llm_call(prompt, content, model)
+
+
+def map_reduce(ctx, map_prompt: str, reduce_prompt: str, n_chunks: int = 4, model: str = "fast") -> str:
+    """
+    Apply map-reduce pattern to process large context.
+
+    This is a powerful emergent strategy: partition the context,
+    apply a map operation to each chunk, then reduce the results.
+
+    Args:
+        ctx: Context string or RLMContext object
+        map_prompt: Prompt to apply to each chunk
+        reduce_prompt: Prompt to combine the mapped results
+        n_chunks: Number of chunks to partition into
+        model: Model tier to use
+
+    Returns:
+        The reduced result string
+
+    Example:
+        >>> result = map_reduce(
+        ...     large_codebase,
+        ...     map_prompt="List all function names and their purpose",
+        ...     reduce_prompt="Combine these function lists and identify the main API",
+        ...     n_chunks=4
+        ... )
+    """
+    chunks = partition(ctx, n=n_chunks)
+
+    # Map phase
+    mapped = llm_batch(
+        [map_prompt] * len(chunks),
+        contexts=chunks,
+        model=model
+    )
+
+    # Reduce phase
+    combined = "\n\n---\n\n".join([f"Chunk {i+1}:\n{m}" for i, m in enumerate(mapped)])
+    return llm_call(reduce_prompt, combined, model)
+
+
+def find_relevant(ctx, query: str, top_k: int = 5, model: str = "fast") -> list[dict]:
+    """
+    Find the most relevant sections of context for a query.
+
+    Combines grep for keyword matching with LLM scoring for relevance.
+
+    Args:
+        ctx: Context string or RLMContext object
+        query: The query to find relevant sections for
+        top_k: Maximum number of relevant sections to return
+        model: Model tier for relevance scoring
+
+    Returns:
+        List of dicts with 'section', 'relevance', 'start_line'
+
+    Example:
+        >>> relevant = find_relevant(codebase, "authentication logic")
+        >>> for r in relevant:
+        ...     print(f"Lines {r['start_line']}: {r['relevance']}")
+    """
+    content = ctx.content if isinstance(ctx, RLMContext) else str(ctx)
+
+    # Extract keywords from query for initial filtering
+    keywords = [w.lower() for w in query.split() if len(w) > 2]
+
+    # Use grep to find potentially relevant sections
+    matches = []
+    for kw in keywords[:3]:  # Limit keywords to avoid noise
+        matches.extend(grep(content, kw, context_lines=3))
+
+    if not matches:
+        # Fallback: partition and score each section
+        chunks = partition_by_lines(ctx, n=min(10, len(content.split('\n')) // 20 + 1))
+        sections = [{"section": c, "start_line": i * (len(content.split('\n')) // len(chunks))}
+                    for i, c in enumerate(chunks) if c.strip()]
+    else:
+        # Deduplicate and expand matches into sections
+        seen_lines = set()
+        sections = []
+        for m in matches:
+            if m['line_num'] not in seen_lines:
+                seen_lines.add(m['line_num'])
+                context = m.get('context_before', []) + [m['line']] + m.get('context_after', [])
+                sections.append({
+                    "section": '\n'.join(context),
+                    "start_line": m['line_num']
+                })
+
+    # Score sections for relevance (if too many)
+    if len(sections) > top_k:
+        # Use LLM to score relevance
+        prompts = [f"Rate 0-10 how relevant this is to: '{query}'. Reply with just the number."] * len(sections)
+        scores = llm_batch(prompts, [s['section'] for s in sections], model)
+
+        for i, score in enumerate(scores):
+            try:
+                sections[i]['relevance'] = int(''.join(c for c in score if c.isdigit())[:2]) / 10
+            except (ValueError, IndexError):
+                sections[i]['relevance'] = 0.5
+
+        sections.sort(key=lambda x: x.get('relevance', 0), reverse=True)
+        sections = sections[:top_k]
+    else:
+        for s in sections:
+            s['relevance'] = 1.0
+
+    return sections
+
+
 # =============================================================================
 # LLM Callback Protocol
 # =============================================================================
@@ -455,6 +593,9 @@ class REPLNamespace:
             "partition_by_lines": partition_by_lines,
             "extract_functions": extract_functions,
             "count_tokens_approx": count_tokens_approx,
+            "summarize": summarize,
+            "map_reduce": map_reduce,
+            "find_relevant": find_relevant,
             "llm_call": llm_call,
             "llm_batch": llm_batch,
             "FINAL": FINAL,
@@ -512,9 +653,9 @@ class REPLNamespace:
             "re", "json", "ast", "pathlib", "itertools", "collections", "Path", "pydantic",
             # RLM helper functions
             "RLMContext", "peek", "grep", "partition", "partition_by_lines",
-            "extract_functions", "count_tokens_approx", "llm_call", "llm_batch",
-            "FINAL", "get_final_output", "clear_final_output",
-            "disable_callbacks", "enable_callbacks",
+            "extract_functions", "count_tokens_approx", "summarize", "map_reduce",
+            "find_relevant", "llm_call", "llm_batch", "FINAL", "get_final_output",
+            "clear_final_output", "disable_callbacks", "enable_callbacks",
         }
 
         for name, value in new_globals.items():
