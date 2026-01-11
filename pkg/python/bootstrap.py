@@ -409,6 +409,12 @@ def find_relevant(ctx, query: str, top_k: int = 5, model: str = "fast") -> list[
 # These functions use a callback protocol to communicate with Go.
 # During execution, Python sends a callback request to stdout and reads
 # the response from stdin.
+#
+# IMPORTANT: We save the original stdout/stdin before any redirections so that
+# callbacks can communicate with Go even when code execution redirects stdout.
+
+_original_stdout = sys.stdout  # Save before any redirections
+_original_stdin = sys.stdin    # Save before any redirections
 
 _callback_id_counter = 0
 _final_output = None
@@ -421,8 +427,8 @@ def _make_callback(callback_type: str, params: dict) -> dict:
     Make a synchronous callback to Go and return the response.
 
     Protocol:
-    1. Write callback request JSON to stdout
-    2. Read callback response JSON from stdin
+    1. Write callback request JSON to stdout (original, not redirected)
+    2. Read callback response JSON from stdin (original)
     3. Return the response
     """
     global _callback_id_counter
@@ -434,12 +440,13 @@ def _make_callback(callback_type: str, params: dict) -> dict:
         "params": params
     }
 
-    # Send request to Go via stdout
-    sys.stdout.write(json.dumps(request) + "\n")
-    sys.stdout.flush()
+    # Send request to Go via the ORIGINAL stdout (pipe to Go)
+    # This bypasses any stdout redirection during code execution
+    _original_stdout.write(json.dumps(request) + "\n")
+    _original_stdout.flush()
 
-    # Read response from Go via stdin
-    response_line = sys.stdin.readline()
+    # Read response from Go via the ORIGINAL stdin (pipe from Go)
+    response_line = _original_stdin.readline()
     if not response_line:
         raise RuntimeError("EOF while waiting for callback response")
 
