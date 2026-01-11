@@ -537,7 +537,32 @@ def enable_callbacks():
     _callback_enabled = True
 
 
-def FINAL(response: str) -> str:
+class FinalOutput:
+    """Structured final output with metadata."""
+
+    def __init__(self, content: str, output_type: str = "text", metadata: dict = None):
+        self.content = content
+        self.type = output_type  # "text", "json", "code", "markdown"
+        self.metadata = metadata or {}
+
+    def __str__(self) -> str:
+        return self.content
+
+    def __repr__(self) -> str:
+        return f"FinalOutput(type={self.type!r}, len={len(self.content)})"
+
+    def to_dict(self) -> dict:
+        return {
+            "content": self.content,
+            "type": self.type,
+            "metadata": self.metadata
+        }
+
+
+_final_output: FinalOutput | None = None
+
+
+def FINAL(response: str, output_type: str = "text") -> str:
     """
     Mark a response as the final output.
 
@@ -547,6 +572,7 @@ def FINAL(response: str) -> str:
 
     Args:
         response: The final response string
+        output_type: Type hint for output ("text", "json", "code", "markdown")
 
     Returns:
         The response (also stored for retrieval)
@@ -556,13 +582,104 @@ def FINAL(response: str) -> str:
         >>> FINAL(f"Here's the summary:\\n{summary}")
     """
     global _final_output
-    _final_output = response
+    _final_output = FinalOutput(str(response), output_type)
     return response
 
 
-def get_final_output():
-    """Get the final output if FINAL() was called."""
-    return _final_output
+def FINAL_VAR(variable_name: str) -> str:
+    """
+    Return the value of a REPL variable as the final output.
+
+    Use this when you've built up an answer in a variable and want to
+    return it without re-serializing.
+
+    Args:
+        variable_name: Name of the variable containing the answer
+
+    Returns:
+        The variable's string value
+
+    Example:
+        >>> answer = ""
+        >>> for chunk in partition(context, 4):
+        ...     answer += llm_call("Summarize", chunk) + "\\n"
+        >>> FINAL_VAR("answer")
+    """
+    # Access the variable from the caller's frame
+    import inspect
+    frame = inspect.currentframe()
+    try:
+        caller_locals = frame.f_back.f_locals
+        caller_globals = frame.f_back.f_globals
+        if variable_name in caller_locals:
+            value = caller_locals[variable_name]
+        elif variable_name in caller_globals:
+            value = caller_globals[variable_name]
+        else:
+            raise NameError(f"Variable '{variable_name}' not found")
+        return FINAL(str(value))
+    finally:
+        del frame
+
+
+def FINAL_JSON(obj, indent: int = 2) -> str:
+    """
+    Return a JSON-formatted final output.
+
+    Args:
+        obj: Object to serialize as JSON
+        indent: Indentation level for pretty-printing
+
+    Returns:
+        JSON string
+
+    Example:
+        >>> result = {"functions": extract_functions(code), "summary": summary}
+        >>> FINAL_JSON(result)
+    """
+    global _final_output
+    content = json.dumps(obj, indent=indent, default=str)
+    _final_output = FinalOutput(content, "json")
+    return content
+
+
+def FINAL_CODE(code: str, language: str = "python") -> str:
+    """
+    Return code as the final output with language annotation.
+
+    Args:
+        code: The code to return
+        language: Programming language for syntax highlighting
+
+    Returns:
+        The code string
+
+    Example:
+        >>> generated = llm_call("Generate a function that...", context)
+        >>> FINAL_CODE(generated, "python")
+    """
+    global _final_output
+    _final_output = FinalOutput(code, "code", {"language": language})
+    return code
+
+
+def get_final_output() -> str | None:
+    """Get the final output content if FINAL() was called."""
+    if _final_output is None:
+        return None
+    return _final_output.content
+
+
+def get_final_metadata() -> dict | None:
+    """Get full final output including metadata."""
+    if _final_output is None:
+        return None
+    return _final_output.to_dict()
+
+
+def has_final_output() -> bool:
+    """Check if FINAL() has been called."""
+    return _final_output is not None
 
 
 def clear_final_output():
@@ -599,7 +716,13 @@ class REPLNamespace:
             "llm_call": llm_call,
             "llm_batch": llm_batch,
             "FINAL": FINAL,
+            "FINAL_VAR": FINAL_VAR,
+            "FINAL_JSON": FINAL_JSON,
+            "FINAL_CODE": FINAL_CODE,
+            "FinalOutput": FinalOutput,
             "get_final_output": get_final_output,
+            "get_final_metadata": get_final_metadata,
+            "has_final_output": has_final_output,
             "clear_final_output": clear_final_output,
             "disable_callbacks": disable_callbacks,
             "enable_callbacks": enable_callbacks,
@@ -654,8 +777,10 @@ class REPLNamespace:
             # RLM helper functions
             "RLMContext", "peek", "grep", "partition", "partition_by_lines",
             "extract_functions", "count_tokens_approx", "summarize", "map_reduce",
-            "find_relevant", "llm_call", "llm_batch", "FINAL", "get_final_output",
-            "clear_final_output", "disable_callbacks", "enable_callbacks",
+            "find_relevant", "llm_call", "llm_batch", "FINAL", "FINAL_VAR",
+            "FINAL_JSON", "FINAL_CODE", "FinalOutput", "get_final_output",
+            "get_final_metadata", "has_final_output", "clear_final_output",
+            "disable_callbacks", "enable_callbacks",
         }
 
         for name, value in new_globals.items():

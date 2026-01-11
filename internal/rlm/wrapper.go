@@ -2,6 +2,7 @@ package rlm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -241,7 +242,13 @@ Context has been externalized to Python variables. Use code execution to explore
 
 ### Utilities
 - count_tokens_approx(text) - Estimate token count
-- FINAL(response) - Return final answer
+
+### Output Functions
+- FINAL(response) - Return text as final answer
+- FINAL_VAR(variable_name) - Return variable value as final answer
+- FINAL_JSON(obj) - Return JSON-formatted output
+- FINAL_CODE(code, language) - Return code with language annotation
+- has_final_output() - Check if FINAL was called
 
 ## Example Workflows
 
@@ -361,6 +368,13 @@ type RLMExecutionResult struct {
 	Note string
 }
 
+// FinalOutputResult contains the result from FINAL() including metadata.
+type FinalOutputResult struct {
+	Content  string            `json:"content"`
+	Type     string            `json:"type"` // "text", "json", "code", "markdown"
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
 // GetFinalOutput retrieves the FINAL() output from the REPL.
 func (w *Wrapper) GetFinalOutput(ctx context.Context) (string, error) {
 	if w.replMgr == nil {
@@ -381,6 +395,55 @@ func (w *Wrapper) GetFinalOutput(ctx context.Context) (string, error) {
 	// Strip quotes from string representation
 	output = strings.Trim(output, "'\"")
 	return output, nil
+}
+
+// GetFinalOutputWithMetadata retrieves FINAL() output with type and metadata.
+func (w *Wrapper) GetFinalOutputWithMetadata(ctx context.Context) (*FinalOutputResult, error) {
+	if w.replMgr == nil {
+		return nil, fmt.Errorf("REPL not available")
+	}
+
+	// Get the full metadata dict
+	result, err := w.replMgr.Execute(ctx, "get_final_metadata()")
+	if err != nil {
+		return nil, err
+	}
+
+	if result.ReturnVal == "None" || result.ReturnVal == "" {
+		return nil, nil
+	}
+
+	// Parse the JSON dict representation
+	// Python returns: {'content': '...', 'type': '...', 'metadata': {...}}
+	// We need to convert Python dict syntax to JSON
+	jsonStr := result.ReturnVal
+	jsonStr = strings.ReplaceAll(jsonStr, "'", "\"")
+	jsonStr = strings.ReplaceAll(jsonStr, "None", "null")
+	jsonStr = strings.ReplaceAll(jsonStr, "True", "true")
+	jsonStr = strings.ReplaceAll(jsonStr, "False", "false")
+
+	var output FinalOutputResult
+	if err := json.Unmarshal([]byte(jsonStr), &output); err != nil {
+		// Fallback to simple string extraction
+		content, _ := w.GetFinalOutput(ctx)
+		return &FinalOutputResult{Content: content, Type: "text"}, nil
+	}
+
+	return &output, nil
+}
+
+// HasFinalOutput checks if FINAL() has been called.
+func (w *Wrapper) HasFinalOutput(ctx context.Context) (bool, error) {
+	if w.replMgr == nil {
+		return false, fmt.Errorf("REPL not available")
+	}
+
+	result, err := w.replMgr.Execute(ctx, "has_final_output()")
+	if err != nil {
+		return false, err
+	}
+
+	return result.ReturnVal == "True", nil
 }
 
 // ClearContext clears all externalized context from the REPL.
