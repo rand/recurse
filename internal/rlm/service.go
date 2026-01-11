@@ -68,6 +68,8 @@ type Service struct {
 	tracer          traceRecorder
 	persistentTrace *PersistentTraceProvider // non-nil if using persistent storage
 	orchestrator    *Orchestrator            // prompt pre-processing
+	subCallRouter   *SubCallRouter           // routes REPL llm_call() to models
+	wrapper         *Wrapper                 // RLM wrapper for context externalization
 
 	// Configuration
 	config ServiceConfig
@@ -148,6 +150,14 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		ContextEnabled: true, // Enable context externalization by default
 	})
 
+	// Create sub-call router for REPL llm_call() support
+	subCallRouter := NewSubCallRouter(SubCallConfig{
+		Client:      llmClient,
+		Models:      meta.DefaultModels(),
+		MaxDepth:    config.Controller.MaxRecursionDepth,
+		BudgetLimit: config.Controller.MaxTokenBudget,
+	})
+
 	svc := &Service{
 		store:           store,
 		controller:      controller,
@@ -155,8 +165,12 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		tracer:          tracer,
 		persistentTrace: persistentTrace,
 		orchestrator:    orchestrator,
+		subCallRouter:   subCallRouter,
 		config:          config,
 	}
+
+	// Create RLM wrapper for context externalization
+	svc.wrapper = NewWrapper(svc, DefaultWrapperConfig())
 
 	// Wire up lifecycle callbacks for statistics
 	lifecycle.OnTaskComplete(func(result *evolution.LifecycleResult) {
@@ -428,6 +442,59 @@ func (s *Service) SetREPLManager(replMgr *repl.Manager) {
 	if s.orchestrator != nil {
 		s.orchestrator.SetREPLManager(replMgr)
 	}
+	if s.wrapper != nil {
+		s.wrapper.SetREPLManager(replMgr)
+	}
+}
+
+// Wrapper returns the RLM wrapper for context externalization.
+func (s *Service) Wrapper() *Wrapper {
+	return s.wrapper
+}
+
+// PrepareContext prepares context for a prompt, potentially externalizing it.
+func (s *Service) PrepareContext(ctx context.Context, prompt string, contexts []ContextSource) (*PreparedPrompt, error) {
+	if s.wrapper == nil {
+		return &PreparedPrompt{
+			OriginalPrompt: prompt,
+			FinalPrompt:    prompt,
+			Mode:           ModeDirecte,
+		}, nil
+	}
+	return s.wrapper.PrepareContext(ctx, prompt, contexts)
+}
+
+// SubCallRouter returns the sub-call router for REPL llm_call() support.
+func (s *Service) SubCallRouter() *SubCallRouter {
+	return s.subCallRouter
+}
+
+// MakeSubCall makes a sub-LLM call (used by REPL llm_call handler).
+func (s *Service) MakeSubCall(ctx context.Context, req SubCallRequest) *SubCallResponse {
+	if s.subCallRouter == nil {
+		return &SubCallResponse{Error: "sub-call router not configured"}
+	}
+	return s.subCallRouter.Call(ctx, req)
+}
+
+// MakeBatchSubCall makes batch sub-LLM calls (used by REPL llm_batch handler).
+func (s *Service) MakeBatchSubCall(ctx context.Context, requests []SubCallRequest) []*SubCallResponse {
+	if s.subCallRouter == nil {
+		responses := make([]*SubCallResponse, len(requests))
+		for i := range responses {
+			responses[i] = &SubCallResponse{Error: "sub-call router not configured"}
+		}
+		return responses
+	}
+	return s.subCallRouter.BatchCall(ctx, requests)
+}
+
+// SubCallStats returns statistics about sub-LLM calls.
+func (s *Service) SubCallStats() SubCallStats {
+	if s.subCallRouter == nil {
+		return SubCallStats{}
+	}
+	return s.subCallRouter.Stats()
 }
 
 // AnalyzePrompt performs RLM analysis on a user prompt.

@@ -1,0 +1,27 @@
+# 2026/01/11 15:15:04.730030 [TestProperty_HighDepthSelectsFastTier] [rapid] draw task: "ordinary work"
+# 2026/01/11 15:15:04.730033 [TestProperty_HighDepthSelectsFastTier] [rapid] draw budget: 1098
+# 2026/01/11 15:15:04.730033 [TestProperty_HighDepthSelectsFastTier] [rapid] draw depth: 6
+# 2026/01/11 15:15:04.730051 [TestProperty_HighDepthSelectsFastTier] 
+# 	Error Trace:	/Users/rand/src/recurse/internal/rlm/meta/openrouter_property_test.go:84
+# 	            				/Users/rand/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:371
+# 	            				/Users/rand/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:380
+# 	            				/Users/rand/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:205
+# 	            				/Users/rand/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:120
+# 	            				/Users/rand/src/recurse/internal/rlm/meta/openrouter_property_test.go:71
+# 	            				/opt/homebrew/Cellar/go/1.25.5/libexec/src/runtime/asm_arm64.s:1268
+# 	Error:      	Not equal: 
+# 	            	expected: 0
+# 	            	actual  : 1
+# 	Test:       	TestProperty_HighDepthSelectsFastTier
+# 	Messages:   	high depth (6) should select fast tier, got tier 1 for Claude Sonnet 4.5
+# 
+v0.4.8#298873038117549835
+0xae53e487b2384
+0x3
+0x2
+0x11d0900b244cbb
+0x12b6ec63945f31
+0x62
+0x91d7fb823ca69
+0x191ccbc8e8852d
+0x3
