@@ -108,8 +108,10 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	var persistentTrace *PersistentTraceProvider
 
 	if config.TracePath != "" {
-		// Use persistent trace provider
-		pt, err := NewPersistentTraceProvider(PersistentTraceConfig{})
+		// Use persistent trace provider with file-based database
+		pt, err := NewPersistentTraceProvider(PersistentTraceConfig{
+			Path: config.TracePath,
+		})
 		if err != nil {
 			store.Close()
 			return nil, fmt.Errorf("create persistent trace provider: %w", err)

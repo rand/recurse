@@ -33,8 +33,9 @@ func (app *App) InitRLM(ctx context.Context) error {
 	// Configure RLM service
 	rlmCfg := rlm.DefaultServiceConfig()
 
-	// Use project-specific storage path
+	// Use project-specific storage paths
 	rlmCfg.StorePath = filepath.Join(app.config.Options.DataDirectory, "rlm.db")
+	rlmCfg.TracePath = filepath.Join(app.config.Options.DataDirectory, "rlm_trace.db")
 
 	// Create service
 	svc, err := rlm.NewService(haikuClient, rlmCfg)
@@ -58,7 +59,7 @@ func (app *App) InitRLM(ctx context.Context) error {
 		return nil
 	})
 
-	slog.Info("RLM service initialized", "store", rlmCfg.StorePath)
+	slog.Info("RLM service initialized", "store", rlmCfg.StorePath, "trace", rlmCfg.TracePath)
 	return nil
 }
 

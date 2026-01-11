@@ -6,9 +6,13 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/embed"
 	"github.com/rand/recurse/internal/tui/components/dialogs/rlmtrace"
 )
 
@@ -25,8 +29,12 @@ type PersistentTraceProvider struct {
 
 // PersistentTraceConfig configures the persistent trace provider.
 type PersistentTraceConfig struct {
+	// Path to the SQLite database file.
+	// If empty and DB is nil, uses in-memory database.
+	Path string
+
 	// DB is an existing database connection to use.
-	// If nil, a new in-memory database is created.
+	// If nil and Path is empty, a new in-memory database is created.
 	DB *sql.DB
 
 	// SessionID optionally links trace events to a session.
@@ -41,6 +49,21 @@ func NewPersistentTraceProvider(cfg PersistentTraceConfig) (*PersistentTraceProv
 	if cfg.DB != nil {
 		db = cfg.DB
 		ownsDB = false
+	} else if cfg.Path != "" {
+		// Create file-based database
+		// Ensure directory exists
+		dir := filepath.Dir(cfg.Path)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create database directory: %w", err)
+		}
+
+		dsn := "file:" + cfg.Path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		var err error
+		db, err = sql.Open("sqlite3", dsn)
+		if err != nil {
+			return nil, fmt.Errorf("open database: %w", err)
+		}
+		ownsDB = true
 	} else {
 		// Create in-memory database
 		var err error

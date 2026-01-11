@@ -1,6 +1,8 @@
 package rlm
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -253,4 +255,58 @@ func TestPersistentTraceProvider_EventTypes(t *testing.T) {
 		require.NotNil(t, result)
 		assert.Equal(t, tt.expected, result.Type, "Type mismatch for %s", tt.input)
 	}
+}
+
+func TestPersistentTraceProvider_FileBased(t *testing.T) {
+	// Create temp directory
+	tmpDir, err := os.MkdirTemp("", "trace_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "trace.db")
+
+	// Create provider with file path
+	provider1, err := NewPersistentTraceProvider(PersistentTraceConfig{
+		Path: dbPath,
+	})
+	require.NoError(t, err)
+
+	// Record event
+	event := TraceEvent{
+		ID:        "file-test-1",
+		Type:      "DIRECT",
+		Action:    "Test file persistence",
+		Tokens:    100,
+		Timestamp: time.Now(),
+		Status:    "completed",
+	}
+	err = provider1.RecordEvent(event)
+	require.NoError(t, err)
+
+	// Close first provider
+	err = provider1.Close()
+	require.NoError(t, err)
+
+	// Verify database file exists
+	_, err = os.Stat(dbPath)
+	require.NoError(t, err, "Database file should exist")
+
+	// Open new provider with same path
+	provider2, err := NewPersistentTraceProvider(PersistentTraceConfig{
+		Path: dbPath,
+	})
+	require.NoError(t, err)
+	defer provider2.Close()
+
+	// Verify event persisted
+	events, err := provider2.GetEvents(10)
+	require.NoError(t, err)
+	assert.Len(t, events, 1)
+	assert.Equal(t, "file-test-1", events[0].ID)
+	assert.Equal(t, "Test file persistence", events[0].Action)
+
+	// Verify stats persisted
+	stats := provider2.Stats()
+	assert.Equal(t, 1, stats.TotalEvents)
+	assert.Equal(t, 100, stats.TotalTokens)
 }
