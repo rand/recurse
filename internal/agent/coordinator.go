@@ -28,6 +28,7 @@ import (
 	"github.com/rand/recurse/internal/message"
 	"github.com/rand/recurse/internal/oauth/copilot"
 	"github.com/rand/recurse/internal/permission"
+	"github.com/rand/recurse/internal/rlm"
 	"github.com/rand/recurse/internal/rlm/repl"
 	"github.com/rand/recurse/internal/session"
 	"golang.org/x/sync/errgroup"
@@ -68,6 +69,7 @@ type coordinator struct {
 	lspClients  *csync.Map[string, *lsp.Client]
 	replManager *repl.Manager
 	rlmTracer   tools.RLMTraceRecorder
+	rlmService  *rlm.Service // RLM service for orchestration
 
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
@@ -85,6 +87,7 @@ func NewCoordinator(
 	lspClients *csync.Map[string, *lsp.Client],
 	replManager *repl.Manager,
 	rlmTracer tools.RLMTraceRecorder,
+	rlmService *rlm.Service,
 ) (Coordinator, error) {
 	c := &coordinator{
 		cfg:         cfg,
@@ -95,6 +98,7 @@ func NewCoordinator(
 		lspClients:  lspClients,
 		replManager: replManager,
 		rlmTracer:   rlmTracer,
+		rlmService:  rlmService,
 		agents:      make(map[string]SessionAgent),
 	}
 
@@ -123,6 +127,9 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
+
+	// RLM Orchestration: Analyze prompt before sending to main agent
+	prompt = c.analyzeWithRLM(ctx, prompt)
 
 	model := c.currentAgent.Model()
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -876,4 +883,79 @@ func (c *coordinator) refreshApiKeyTemplate(ctx context.Context, providerCfg con
 		return err
 	}
 	return nil
+}
+
+// analyzeWithRLM performs RLM orchestration analysis on the prompt.
+// Returns the enhanced prompt with RLM insights, or the original prompt if RLM is unavailable.
+func (c *coordinator) analyzeWithRLM(ctx context.Context, prompt string) string {
+	if c.rlmService == nil || !c.rlmService.IsOrchestrationEnabled() {
+		return prompt
+	}
+
+	// Estimate context tokens (rough approximation)
+	contextTokens := len(prompt) / 4
+
+	analysis, err := c.rlmService.AnalyzePrompt(ctx, prompt, contextTokens)
+	if err != nil {
+		slog.Warn("RLM analysis failed, using original prompt", "error", err)
+		return prompt
+	}
+
+	// Record analysis as a trace event
+	if c.rlmService.IsRunning() && analysis.Decision != nil {
+		c.recordRLMAnalysisTrace(analysis)
+	}
+
+	// Log analysis results
+	if analysis.Decision != nil {
+		slog.Info("RLM orchestration analysis complete",
+			"action", analysis.Decision.Action,
+			"reasoning", analysis.Decision.Reasoning,
+			"should_decompose", analysis.ShouldDecompose,
+			"duration", analysis.AnalysisTime)
+
+		if analysis.ContextNeeds != nil && analysis.ContextNeeds.Priority > 5 {
+			slog.Debug("RLM identified high-priority context needs",
+				"file_patterns", analysis.ContextNeeds.FilePatterns,
+				"search_queries", analysis.ContextNeeds.SearchQueries)
+		}
+
+		if analysis.Routing != nil {
+			slog.Debug("RLM routing recommendation",
+				"tier", analysis.Routing.PrimaryTier,
+				"model", analysis.Routing.PrimaryModel,
+				"reasoning", analysis.Routing.Reasoning)
+		}
+	}
+
+	return analysis.EnhancedPrompt
+}
+
+// recordRLMAnalysisTrace records the RLM analysis as a trace event.
+func (c *coordinator) recordRLMAnalysisTrace(analysis *rlm.AnalysisResult) {
+	if analysis == nil || analysis.Decision == nil {
+		return
+	}
+
+	details := fmt.Sprintf("Action: %s\nReasoning: %s", analysis.Decision.Action, analysis.Decision.Reasoning)
+
+	if analysis.Routing != nil {
+		details += fmt.Sprintf("\nRouting: tier=%d, model=%s", analysis.Routing.PrimaryTier, analysis.Routing.PrimaryModel)
+	}
+
+	if analysis.ShouldDecompose && len(analysis.Subtasks) > 0 {
+		details += fmt.Sprintf("\nSubtasks: %d identified", len(analysis.Subtasks))
+	}
+
+	event := rlm.TraceEvent{
+		Type:    "orchestration",
+		Action:  string(analysis.Decision.Action),
+		Details: details,
+		Depth:   0,
+		Status:  "complete",
+	}
+
+	if err := c.rlmService.Controller().Tracer().RecordEvent(event); err != nil {
+		slog.Debug("Failed to record RLM analysis trace", "error", err)
+	}
 }

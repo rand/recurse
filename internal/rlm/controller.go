@@ -90,6 +90,11 @@ func (c *Controller) SetTracer(tracer TraceRecorder) {
 	c.tracer = tracer
 }
 
+// Tracer returns the trace recorder.
+func (c *Controller) Tracer() TraceRecorder {
+	return c.tracer
+}
+
 // Execute runs the RLM orchestration loop for a task.
 func (c *Controller) Execute(ctx context.Context, task string) (*ExecutionResult, error) {
 	start := time.Now()

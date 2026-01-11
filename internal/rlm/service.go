@@ -32,16 +32,21 @@ type ServiceConfig struct {
 	// TracePath is the path for persistent trace storage (empty for in-memory).
 	// When set, trace events persist across sessions.
 	TracePath string
+
+	// OrchestratorEnabled enables RLM orchestration for prompt pre-processing.
+	// When enabled, every prompt is analyzed by RLM before being sent to the main agent.
+	OrchestratorEnabled bool
 }
 
 // DefaultServiceConfig returns sensible defaults for the RLM service.
 func DefaultServiceConfig() ServiceConfig {
 	return ServiceConfig{
-		Controller:     DefaultControllerConfig(),
-		Lifecycle:      evolution.DefaultLifecycleConfig(),
-		Meta:           meta.DefaultConfig(),
-		MaxTraceEvents: 1000,
-		StorePath:      "",
+		Controller:          DefaultControllerConfig(),
+		Lifecycle:           evolution.DefaultLifecycleConfig(),
+		Meta:                meta.DefaultConfig(),
+		MaxTraceEvents:      1000,
+		StorePath:           "",
+		OrchestratorEnabled: true, // Enable orchestration by default
 	}
 }
 
@@ -61,6 +66,7 @@ type Service struct {
 	lifecycle       *evolution.LifecycleManager
 	tracer          traceRecorder
 	persistentTrace *PersistentTraceProvider // non-nil if using persistent storage
+	orchestrator    *Orchestrator            // prompt pre-processing
 
 	// Configuration
 	config ServiceConfig
@@ -134,12 +140,19 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		return nil, fmt.Errorf("create lifecycle manager: %w", err)
 	}
 
+	// Create orchestrator for prompt pre-processing
+	orchestrator := NewOrchestrator(metaCtrl, OrchestratorConfig{
+		Enabled: config.OrchestratorEnabled,
+		Models:  meta.DefaultModels(),
+	})
+
 	svc := &Service{
 		store:           store,
 		controller:      controller,
 		lifecycle:       lifecycle,
 		tracer:          tracer,
 		persistentTrace: persistentTrace,
+		orchestrator:    orchestrator,
 		config:          config,
 	}
 
@@ -400,4 +413,33 @@ func (s *Service) RecordTraceEvent(event rlmtrace.TraceEvent) error {
 		Status:    event.Status,
 	}
 	return s.tracer.RecordEvent(internalEvent)
+}
+
+// Orchestrator returns the RLM orchestrator for prompt pre-processing.
+func (s *Service) Orchestrator() *Orchestrator {
+	return s.orchestrator
+}
+
+// AnalyzePrompt performs RLM analysis on a user prompt.
+// This should be called before sending the prompt to the main agent.
+func (s *Service) AnalyzePrompt(ctx context.Context, prompt string, contextTokens int) (*AnalysisResult, error) {
+	if s.orchestrator == nil {
+		return &AnalysisResult{
+			OriginalPrompt: prompt,
+			EnhancedPrompt: prompt,
+		}, nil
+	}
+	return s.orchestrator.Analyze(ctx, prompt, contextTokens)
+}
+
+// IsOrchestrationEnabled returns whether RLM orchestration is enabled.
+func (s *Service) IsOrchestrationEnabled() bool {
+	return s.orchestrator != nil && s.orchestrator.IsEnabled()
+}
+
+// SetOrchestrationEnabled enables or disables RLM orchestration.
+func (s *Service) SetOrchestrationEnabled(enabled bool) {
+	if s.orchestrator != nil {
+		s.orchestrator.SetEnabled(enabled)
+	}
 }

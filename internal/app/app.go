@@ -388,6 +388,7 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		app.LSPClients,
 		app.REPLManager,
 		app.RLM, // Pass RLM service as trace recorder (may be nil)
+		app.RLM, // Pass RLM service for orchestration (may be nil)
 	)
 	if err != nil {
 		slog.Error("Failed to create coder agent", "err", err)
