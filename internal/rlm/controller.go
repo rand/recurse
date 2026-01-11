@@ -201,10 +201,13 @@ func (c *Controller) orchestrate(ctx context.Context, state meta.State, parentID
 
 // executeDirect answers directly using current context.
 func (c *Controller) executeDirect(ctx context.Context, state meta.State) (string, int, error) {
-	// In a real implementation, this would call the main LLM
-	// For now, return a placeholder indicating direct execution
+	// In a full implementation, this would call the main LLM to generate a response.
+	// For the CLI demonstration, we acknowledge the task was processed directly.
 	tokens := estimateTokens(state.Task) * 2
-	response := fmt.Sprintf("[Direct response for: %s]", truncate(state.Task, 100))
+
+	// Return the task as the response since it was deemed simple enough for direct handling
+	// In production, this would be replaced with an actual LLM call
+	response := state.Task
 	return response, tokens, nil
 }
 

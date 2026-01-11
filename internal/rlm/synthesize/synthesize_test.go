@@ -20,9 +20,31 @@ func TestConcatenateSynthesizer_Basic(t *testing.T) {
 	out, err := s.Synthesize(ctx, "test task", results)
 	require.NoError(t, err)
 
-	assert.Contains(t, out.Response, "Part 1")
+	// Default synthesizer doesn't include headers for cleaner output
 	assert.Contains(t, out.Response, "First result")
-	assert.Contains(t, out.Response, "Part 2")
+	assert.Contains(t, out.Response, "Second result")
+	assert.Equal(t, 25, out.TotalTokensUsed)
+	assert.Equal(t, 2, out.PartCount)
+}
+
+func TestConcatenateSynthesizer_WithHeaders(t *testing.T) {
+	s := &ConcatenateSynthesizer{
+		Separator:      "\n\n---\n\n",
+		IncludeHeaders: true,
+	}
+	ctx := context.Background()
+
+	results := []SubCallResult{
+		{ID: "1", Name: "Part 1", Response: "First result", TokensUsed: 10},
+		{ID: "2", Name: "Part 2", Response: "Second result", TokensUsed: 15},
+	}
+
+	out, err := s.Synthesize(ctx, "test task", results)
+	require.NoError(t, err)
+
+	assert.Contains(t, out.Response, "## Part 1")
+	assert.Contains(t, out.Response, "First result")
+	assert.Contains(t, out.Response, "## Part 2")
 	assert.Contains(t, out.Response, "Second result")
 	assert.Equal(t, 25, out.TotalTokensUsed)
 	assert.Equal(t, 2, out.PartCount)

@@ -71,8 +71,8 @@ type ConcatenateSynthesizer struct {
 // NewConcatenateSynthesizer creates a concatenation-based synthesizer.
 func NewConcatenateSynthesizer() *ConcatenateSynthesizer {
 	return &ConcatenateSynthesizer{
-		Separator:      "\n\n---\n\n",
-		IncludeHeaders: true,
+		Separator:      "\n\n",
+		IncludeHeaders: false, // Don't add chunk headers - cleaner output
 	}
 }
 
