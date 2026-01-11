@@ -26,6 +26,15 @@ var modelPairs = []modelPair{
 	{"zai-glm4.6", zAIBuilder("glm-4.6"), zAIBuilder("glm-4.5-air")},
 }
 
+// requiredEnvVars maps model pair names to their required environment variables.
+// If the env var is not set, the test will be skipped.
+var requiredEnvVars = map[string]string{
+	"anthropic-sonnet":   "CRUSH_ANTHROPIC_API_KEY",
+	"openai-gpt-5":       "CRUSH_OPENAI_API_KEY",
+	"openrouter-kimi-k2": "CRUSH_OPENROUTER_API_KEY",
+	"zai-glm4.6":         "CRUSH_ZAI_API_KEY",
+}
+
 func getModels(t *testing.T, r *vcr.Recorder, pair modelPair) (fantasy.LanguageModel, fantasy.LanguageModel) {
 	large, err := pair.largeModel(t, r)
 	require.NoError(t, err)
@@ -35,6 +44,17 @@ func getModels(t *testing.T, r *vcr.Recorder, pair modelPair) (fantasy.LanguageM
 }
 
 func setupAgent(t *testing.T, pair modelPair) (SessionAgent, fakeEnv) {
+	// Skip if required API key is not set and we need to re-record cassettes
+	if envVar, ok := requiredEnvVars[pair.name]; ok {
+		if os.Getenv(envVar) == "" {
+			// Check if cassette exists - if not, we need the API key to record
+			cassettePath := filepath.Join("testdata", t.Name()+".yaml")
+			if _, err := os.Stat(cassettePath); os.IsNotExist(err) {
+				t.Skipf("skipping %s: %s not set and no cassette exists", pair.name, envVar)
+			}
+		}
+	}
+
 	r := vcr.NewRecorder(t)
 	large, small := getModels(t, r, pair)
 	env := testEnv(t)
