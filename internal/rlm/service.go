@@ -23,11 +23,15 @@ type ServiceConfig struct {
 	// Meta-controller configuration
 	Meta meta.Config
 
-	// MaxTraceEvents is the maximum trace events to retain.
+	// MaxTraceEvents is the maximum trace events to retain (in-memory provider only).
 	MaxTraceEvents int
 
 	// StorePath is the path for persistent hypergraph storage (empty for in-memory).
 	StorePath string
+
+	// TracePath is the path for persistent trace storage (empty for in-memory).
+	// When set, trace events persist across sessions.
+	TracePath string
 }
 
 // DefaultServiceConfig returns sensible defaults for the RLM service.
@@ -41,15 +45,22 @@ func DefaultServiceConfig() ServiceConfig {
 	}
 }
 
+// traceRecorder is the interface for recording trace events.
+type traceRecorder interface {
+	rlmtrace.TraceProvider
+	RecordEvent(event TraceEvent) error
+}
+
 // Service is the unified RLM service that orchestrates all subsystems.
 type Service struct {
 	mu sync.RWMutex
 
 	// Core components
-	store      *hypergraph.Store
-	controller *Controller
-	lifecycle  *evolution.LifecycleManager
-	tracer     *TraceProvider
+	store           *hypergraph.Store
+	controller      *Controller
+	lifecycle       *evolution.LifecycleManager
+	tracer          traceRecorder
+	persistentTrace *PersistentTraceProvider // non-nil if using persistent storage
 
 	// Configuration
 	config ServiceConfig
@@ -78,6 +89,7 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	storeOpts := hypergraph.Options{}
 	if config.StorePath != "" {
 		storeOpts.Path = config.StorePath
+		storeOpts.CreateIfNotExists = true
 	}
 
 	store, err := hypergraph.NewStore(storeOpts)
@@ -91,23 +103,42 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	// Create RLM controller
 	controller := NewController(metaCtrl, store, config.Controller)
 
-	// Create trace provider
-	tracer := NewTraceProvider(config.MaxTraceEvents)
+	// Create trace provider (persistent or in-memory)
+	var tracer traceRecorder
+	var persistentTrace *PersistentTraceProvider
+
+	if config.TracePath != "" {
+		// Use persistent trace provider
+		pt, err := NewPersistentTraceProvider(PersistentTraceConfig{})
+		if err != nil {
+			store.Close()
+			return nil, fmt.Errorf("create persistent trace provider: %w", err)
+		}
+		tracer = pt
+		persistentTrace = pt
+	} else {
+		// Use in-memory trace provider
+		tracer = NewTraceProvider(config.MaxTraceEvents)
+	}
 	controller.SetTracer(tracer)
 
 	// Create lifecycle manager
 	lifecycle, err := evolution.NewLifecycleManager(store, config.Lifecycle)
 	if err != nil {
+		if persistentTrace != nil {
+			persistentTrace.Close()
+		}
 		store.Close()
 		return nil, fmt.Errorf("create lifecycle manager: %w", err)
 	}
 
 	svc := &Service{
-		store:      store,
-		controller: controller,
-		lifecycle:  lifecycle,
-		tracer:     tracer,
-		config:     config,
+		store:           store,
+		controller:      controller,
+		lifecycle:       lifecycle,
+		tracer:          tracer,
+		persistentTrace: persistentTrace,
+		config:          config,
 	}
 
 	// Wire up lifecycle callbacks for statistics
@@ -158,6 +189,13 @@ func (s *Service) Stop() error {
 	// Stop lifecycle manager (stops idle loop)
 	if err := s.lifecycle.Close(); err != nil {
 		return fmt.Errorf("close lifecycle: %w", err)
+	}
+
+	// Close persistent trace provider if present
+	if s.persistentTrace != nil {
+		if err := s.persistentTrace.Close(); err != nil {
+			return fmt.Errorf("close trace provider: %w", err)
+		}
 	}
 
 	// Close store
