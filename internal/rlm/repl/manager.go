@@ -37,6 +37,9 @@ type Manager struct {
 
 	// callbackHandler handles LLM callbacks from Python during execution.
 	callbackHandler CallbackHandler
+
+	// memoryHandler handles memory callbacks from Python during execution.
+	memoryHandler MemoryCallbackHandler
 }
 
 // Options configures the REPL manager.
@@ -261,6 +264,14 @@ func (m *Manager) SetCallbackHandler(handler CallbackHandler) {
 	m.callbackHandler = handler
 }
 
+// SetMemoryHandler sets the handler for memory callbacks from Python.
+// This must be set before Execute() to enable memory_* functions in Python code.
+func (m *Manager) SetMemoryHandler(handler MemoryCallbackHandler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.memoryHandler = handler
+}
+
 // Execute runs Python code and returns the result.
 // If the code calls llm_call() or llm_batch(), these are handled via callbacks
 // to the registered CallbackHandler.
@@ -370,11 +381,12 @@ func (m *Manager) handleCallback(ctx context.Context, data []byte) error {
 	var resp CallbackResponse
 	resp.CallbackID = req.CallbackID
 
-	if m.callbackHandler == nil {
-		resp.Error = "LLM callback handler not configured"
-	} else {
-		switch req.Callback {
-		case "llm_call":
+	switch req.Callback {
+	// LLM callbacks
+	case "llm_call":
+		if m.callbackHandler == nil {
+			resp.Error = "LLM callback handler not configured"
+		} else {
 			prompt, _ := req.Params["prompt"].(string)
 			context, _ := req.Params["context"].(string)
 			model, _ := req.Params["model"].(string)
@@ -385,8 +397,12 @@ func (m *Manager) handleCallback(ctx context.Context, data []byte) error {
 			} else {
 				resp.Result = result
 			}
+		}
 
-		case "llm_batch":
+	case "llm_batch":
+		if m.callbackHandler == nil {
+			resp.Error = "LLM callback handler not configured"
+		} else {
 			promptsRaw, _ := req.Params["prompts"].([]interface{})
 			contextsRaw, _ := req.Params["contexts"].([]interface{})
 			model, _ := req.Params["model"].(string)
@@ -406,10 +422,90 @@ func (m *Manager) handleCallback(ctx context.Context, data []byte) error {
 			} else {
 				resp.Results = results
 			}
-
-		default:
-			resp.Error = fmt.Sprintf("unknown callback: %s", req.Callback)
 		}
+
+	// Memory callbacks
+	case "memory_query":
+		if m.memoryHandler == nil {
+			resp.Error = "Memory callback handler not configured"
+		} else {
+			query, _ := req.Params["query"].(string)
+			limit, _ := req.Params["limit"].(float64) // JSON numbers are float64
+
+			nodes, err := m.memoryHandler.MemoryQuery(query, int(limit))
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				// Encode nodes as JSON for the result
+				nodesJSON, _ := json.Marshal(nodes)
+				resp.Result = string(nodesJSON)
+			}
+		}
+
+	case "memory_add_fact":
+		if m.memoryHandler == nil {
+			resp.Error = "Memory callback handler not configured"
+		} else {
+			content, _ := req.Params["content"].(string)
+			confidence, _ := req.Params["confidence"].(float64)
+
+			nodeID, err := m.memoryHandler.MemoryAddFact(content, confidence)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				resp.Result = nodeID
+			}
+		}
+
+	case "memory_add_experience":
+		if m.memoryHandler == nil {
+			resp.Error = "Memory callback handler not configured"
+		} else {
+			content, _ := req.Params["content"].(string)
+			outcome, _ := req.Params["outcome"].(string)
+			success, _ := req.Params["success"].(bool)
+
+			nodeID, err := m.memoryHandler.MemoryAddExperience(content, outcome, success)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				resp.Result = nodeID
+			}
+		}
+
+	case "memory_get_context":
+		if m.memoryHandler == nil {
+			resp.Error = "Memory callback handler not configured"
+		} else {
+			limit, _ := req.Params["limit"].(float64)
+
+			nodes, err := m.memoryHandler.MemoryGetContext(int(limit))
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				nodesJSON, _ := json.Marshal(nodes)
+				resp.Result = string(nodesJSON)
+			}
+		}
+
+	case "memory_relate":
+		if m.memoryHandler == nil {
+			resp.Error = "Memory callback handler not configured"
+		} else {
+			label, _ := req.Params["label"].(string)
+			subjectID, _ := req.Params["subject_id"].(string)
+			objectID, _ := req.Params["object_id"].(string)
+
+			edgeID, err := m.memoryHandler.MemoryRelate(label, subjectID, objectID)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				resp.Result = edgeID
+			}
+		}
+
+	default:
+		resp.Error = fmt.Sprintf("unknown callback: %s", req.Callback)
 	}
 
 	// Send response back to Python

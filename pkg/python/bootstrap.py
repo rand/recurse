@@ -404,15 +404,16 @@ def find_relevant(ctx, query: str, top_k: int = 5, model: str = "fast") -> list[
 
 
 # =============================================================================
-# LLM Callback Protocol
+# Callback Protocol
 # =============================================================================
-# These functions use a callback protocol to make LLM calls back to Go.
+# These functions use a callback protocol to communicate with Go.
 # During execution, Python sends a callback request to stdout and reads
 # the response from stdin.
 
 _callback_id_counter = 0
 _final_output = None
 _callback_enabled = True  # Can be disabled for testing
+_memory_enabled = True    # Can be disabled for testing
 
 
 def _make_callback(callback_type: str, params: dict) -> dict:
@@ -535,6 +536,201 @@ def enable_callbacks():
     """Enable LLM callbacks (default)."""
     global _callback_enabled
     _callback_enabled = True
+
+
+# =============================================================================
+# Memory Functions
+# =============================================================================
+# These functions provide access to the hypergraph memory system from Python.
+# Memory stores facts, experiences, and relationships that persist across sessions.
+
+
+class MemoryNode:
+    """Represents a node from the hypergraph memory."""
+
+    def __init__(self, data: dict):
+        self.id = data.get("id", "")
+        self.type = data.get("type", "")
+        self.content = data.get("content", "")
+        self.confidence = data.get("confidence", 0.0)
+        self.tier = data.get("tier", "")
+
+    def __repr__(self) -> str:
+        return f"MemoryNode({self.type}, conf={self.confidence:.2f}, {self.content[:50]}...)"
+
+    def __str__(self) -> str:
+        return self.content
+
+
+def memory_query(query: str, limit: int = 10) -> list[MemoryNode]:
+    """
+    Search memory for relevant nodes.
+
+    Args:
+        query: Search query string
+        limit: Maximum number of results to return
+
+    Returns:
+        List of MemoryNode objects matching the query
+
+    Example:
+        >>> nodes = memory_query("error handling", limit=5)
+        >>> for node in nodes:
+        ...     print(f"{node.type}: {node.content[:100]}")
+    """
+    if not _memory_enabled:
+        return []
+
+    try:
+        response = _make_callback("memory_query", {
+            "query": query,
+            "limit": limit
+        })
+        result = response.get("result", "[]")
+        nodes_data = json.loads(result) if isinstance(result, str) else result
+        return [MemoryNode(n) for n in nodes_data]
+    except Exception as e:
+        return []
+
+
+def memory_add_fact(content: str, confidence: float = 0.8) -> str:
+    """
+    Add a fact to memory.
+
+    Facts are pieces of knowledge extracted from context or reasoning.
+    They persist and can be queried later.
+
+    Args:
+        content: The fact content
+        confidence: Confidence level (0.0 to 1.0)
+
+    Returns:
+        The ID of the created node
+
+    Example:
+        >>> node_id = memory_add_fact("Function foo() returns a string", 0.95)
+        >>> memory_add_fact("This codebase uses pytest for testing", 0.9)
+    """
+    if not _memory_enabled:
+        return ""
+
+    try:
+        response = _make_callback("memory_add_fact", {
+            "content": content,
+            "confidence": confidence
+        })
+        return response.get("result", "")
+    except Exception:
+        return ""
+
+
+def memory_add_experience(content: str, outcome: str, success: bool = True) -> str:
+    """
+    Add an experience to memory.
+
+    Experiences track what worked and what didn't, enabling learning.
+
+    Args:
+        content: Description of the experience
+        outcome: What happened as a result
+        success: Whether this was a successful outcome
+
+    Returns:
+        The ID of the created node
+
+    Example:
+        >>> memory_add_experience(
+        ...     "Used map_reduce for large file analysis",
+        ...     "Successfully processed 100KB file in 4 chunks",
+        ...     success=True
+        ... )
+    """
+    if not _memory_enabled:
+        return ""
+
+    try:
+        response = _make_callback("memory_add_experience", {
+            "content": content,
+            "outcome": outcome,
+            "success": success
+        })
+        return response.get("result", "")
+    except Exception:
+        return ""
+
+
+def memory_get_context(limit: int = 10) -> list[MemoryNode]:
+    """
+    Get recent context nodes from memory.
+
+    Returns the most recently accessed/relevant nodes for context injection.
+
+    Args:
+        limit: Maximum number of nodes to return
+
+    Returns:
+        List of MemoryNode objects
+
+    Example:
+        >>> context = memory_get_context(20)
+        >>> context_str = "\\n".join([n.content for n in context])
+        >>> result = llm_call("Based on this context...", context_str)
+    """
+    if not _memory_enabled:
+        return []
+
+    try:
+        response = _make_callback("memory_get_context", {
+            "limit": limit
+        })
+        result = response.get("result", "[]")
+        nodes_data = json.loads(result) if isinstance(result, str) else result
+        return [MemoryNode(n) for n in nodes_data]
+    except Exception:
+        return []
+
+
+def memory_relate(label: str, subject_id: str, object_id: str) -> str:
+    """
+    Create a relationship between two memory nodes.
+
+    Args:
+        label: Relationship label (e.g., "implements", "uses", "related_to")
+        subject_id: ID of the source node
+        object_id: ID of the target node
+
+    Returns:
+        The ID of the created edge
+
+    Example:
+        >>> fact1 = memory_add_fact("Function foo exists", 0.9)
+        >>> fact2 = memory_add_fact("Function bar calls foo", 0.9)
+        >>> memory_relate("calls", fact2, fact1)
+    """
+    if not _memory_enabled:
+        return ""
+
+    try:
+        response = _make_callback("memory_relate", {
+            "label": label,
+            "subject_id": subject_id,
+            "object_id": object_id
+        })
+        return response.get("result", "")
+    except Exception:
+        return ""
+
+
+def disable_memory():
+    """Disable memory callbacks (for testing without Go runtime)."""
+    global _memory_enabled
+    _memory_enabled = False
+
+
+def enable_memory():
+    """Enable memory callbacks (default)."""
+    global _memory_enabled
+    _memory_enabled = True
 
 
 class FinalOutput:
@@ -726,6 +922,15 @@ class REPLNamespace:
             "clear_final_output": clear_final_output,
             "disable_callbacks": disable_callbacks,
             "enable_callbacks": enable_callbacks,
+            # Memory functions
+            "MemoryNode": MemoryNode,
+            "memory_query": memory_query,
+            "memory_add_fact": memory_add_fact,
+            "memory_add_experience": memory_add_experience,
+            "memory_get_context": memory_get_context,
+            "memory_relate": memory_relate,
+            "disable_memory": disable_memory,
+            "enable_memory": enable_memory,
         }
         if PYDANTIC_AVAILABLE:
             self._globals["pydantic"] = pydantic
@@ -781,6 +986,9 @@ class REPLNamespace:
             "FINAL_JSON", "FINAL_CODE", "FinalOutput", "get_final_output",
             "get_final_metadata", "has_final_output", "clear_final_output",
             "disable_callbacks", "enable_callbacks",
+            # Memory functions
+            "MemoryNode", "memory_query", "memory_add_fact", "memory_add_experience",
+            "memory_get_context", "memory_relate", "disable_memory", "enable_memory",
         }
 
         for name, value in new_globals.items():

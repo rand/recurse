@@ -250,6 +250,13 @@ Context has been externalized to Python variables. Use code execution to explore
 - FINAL_CODE(code, language) - Return code with language annotation
 - has_final_output() - Check if FINAL was called
 
+### Memory Functions (Persistent Knowledge)
+- memory_query(query, limit=10) - Search memory for relevant facts
+- memory_add_fact(content, confidence=0.8) - Store a fact
+- memory_add_experience(content, outcome, success) - Record what worked/didn't
+- memory_get_context(limit=10) - Get recent relevant context
+- memory_relate(label, subject_id, object_id) - Link two memory nodes
+
 ## Example Workflows
 
 ### Simple Analysis

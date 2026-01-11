@@ -188,3 +188,56 @@ type CallbackHandler interface {
 	// HandleLLMBatch handles a batch of LLM calls from Python.
 	HandleLLMBatch(prompts, contexts []string, model string) ([]string, error)
 }
+
+// MemoryCallbackHandler handles memory operations from Python.
+type MemoryCallbackHandler interface {
+	// MemoryQuery searches memory for relevant nodes.
+	MemoryQuery(query string, limit int) ([]MemoryNode, error)
+
+	// MemoryAddFact adds a fact to memory.
+	MemoryAddFact(content string, confidence float64) (string, error)
+
+	// MemoryAddExperience adds an experience to memory.
+	MemoryAddExperience(content, outcome string, success bool) (string, error)
+
+	// MemoryGetContext retrieves recent context nodes.
+	MemoryGetContext(limit int) ([]MemoryNode, error)
+
+	// MemoryRelate creates a relationship between nodes.
+	MemoryRelate(label, subjectID, objectID string) (string, error)
+}
+
+// MemoryNode represents a memory node returned to Python.
+type MemoryNode struct {
+	ID         string  `json:"id"`
+	Type       string  `json:"type"`
+	Content    string  `json:"content"`
+	Confidence float64 `json:"confidence"`
+	Tier       string  `json:"tier"`
+}
+
+// MemoryQueryParams contains parameters for memory_query callback.
+type MemoryQueryParams struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit"`
+}
+
+// MemoryAddFactParams contains parameters for memory_add_fact callback.
+type MemoryAddFactParams struct {
+	Content    string  `json:"content"`
+	Confidence float64 `json:"confidence"`
+}
+
+// MemoryAddExperienceParams contains parameters for memory_add_experience callback.
+type MemoryAddExperienceParams struct {
+	Content string `json:"content"`
+	Outcome string `json:"outcome"`
+	Success bool   `json:"success"`
+}
+
+// MemoryRelateParams contains parameters for memory_relate callback.
+type MemoryRelateParams struct {
+	Label     string `json:"label"`
+	SubjectID string `json:"subject_id"`
+	ObjectID  string `json:"object_id"`
+}

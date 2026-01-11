@@ -451,6 +451,12 @@ func (s *Service) SetREPLManager(replMgr *repl.Manager) {
 		handler := NewREPLCallbackHandler(s.subCallRouter)
 		replMgr.SetCallbackHandler(handler)
 	}
+
+	// Wire up the memory handler so Python's memory_* functions work
+	if replMgr != nil && s.store != nil {
+		memHandler := NewMemoryCallbackHandler(s.store)
+		replMgr.SetMemoryHandler(memHandler)
+	}
 }
 
 // Wrapper returns the RLM wrapper for context externalization.
