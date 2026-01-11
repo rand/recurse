@@ -318,10 +318,53 @@ func (w *Wrapper) generateRLMPrompt(originalPrompt string, loaded *LoadedContext
 	return sb.String()
 }
 
+// RLMConfig contains configuration for RLM execution.
+type RLMConfig struct {
+	// MaxIterations is the maximum number of code execution rounds.
+	MaxIterations int
+
+	// MaxTokensPerCall is the maximum tokens per LLM call.
+	MaxTokensPerCall int
+
+	// Timeout is the maximum total execution time.
+	Timeout time.Duration
+}
+
+// DefaultRLMConfig returns sensible defaults for RLM execution.
+func DefaultRLMConfig() RLMConfig {
+	return RLMConfig{
+		MaxIterations:    10,
+		MaxTokensPerCall: 4096,
+		Timeout:          5 * time.Minute,
+	}
+}
+
 // ExecuteRLM executes a prompt in RLM mode with code execution loop.
+// The LLM generates Python code which is executed in the REPL. The loop
+// continues until FINAL() is called or max iterations is reached.
 func (w *Wrapper) ExecuteRLM(ctx context.Context, prepared *PreparedPrompt) (*RLMExecutionResult, error) {
+	return w.ExecuteRLMWithConfig(ctx, prepared, DefaultRLMConfig())
+}
+
+// ExecuteRLMWithConfig executes RLM with custom configuration.
+func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPrompt, cfg RLMConfig) (*RLMExecutionResult, error) {
 	if prepared.Mode != ModeRLM {
 		return nil, fmt.Errorf("not in RLM mode")
+	}
+
+	if w.replMgr == nil {
+		return nil, fmt.Errorf("REPL manager not configured")
+	}
+
+	if w.client == nil {
+		return nil, fmt.Errorf("LLM client not configured")
+	}
+
+	// Apply timeout
+	if cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
 	}
 
 	result := &RLMExecutionResult{
@@ -333,25 +376,258 @@ func (w *Wrapper) ExecuteRLM(ctx context.Context, prepared *PreparedPrompt) (*RL
 		slog.Warn("Failed to clear FINAL output", "error", err)
 	}
 
-	// The actual execution loop would involve:
-	// 1. Send prompt to LLM
-	// 2. LLM returns Python code
-	// 3. Execute code in REPL
-	// 4. If FINAL() was called, return the result
-	// 5. Otherwise, send execution results back to LLM and repeat
+	// Build initial conversation
+	conversation := []conversationMessage{
+		{Role: "system", Content: prepared.SystemPrompt},
+		{Role: "user", Content: prepared.FinalPrompt},
+	}
 
-	// For now, we return a placeholder - the actual loop requires
-	// integration with the agent's conversation handling
+	// Main execution loop
+	for iteration := 0; iteration < cfg.MaxIterations; iteration++ {
+		result.Iterations = iteration + 1
+
+		// Check context cancellation
+		if err := ctx.Err(); err != nil {
+			result.Error = fmt.Sprintf("context cancelled: %v", err)
+			break
+		}
+
+		// Send conversation to LLM
+		prompt := w.formatConversation(conversation)
+		response, err := w.client.Complete(ctx, prompt, cfg.MaxTokensPerCall)
+		if err != nil {
+			result.Error = fmt.Sprintf("LLM call failed: %v", err)
+			break
+		}
+
+		// Estimate tokens used
+		result.TotalTokens += estimateTokens(prompt) + estimateTokens(response)
+
+		// Extract Python code from response
+		code := extractPythonCode(response)
+		if code == "" {
+			// No code found - LLM might have provided a direct answer
+			// Check if this looks like a final answer
+			if looksLikeFinalAnswer(response) {
+				result.FinalOutput = response
+				break
+			}
+
+			// Ask LLM to provide code
+			conversation = append(conversation,
+				conversationMessage{Role: "assistant", Content: response},
+				conversationMessage{Role: "user", Content: "Please write Python code to solve this task. Use the available helper functions (peek, grep, partition, llm_call) to explore the context, and call FINAL() with your answer when done."},
+			)
+			continue
+		}
+
+		// Execute the code in REPL
+		execResult, err := w.replMgr.Execute(ctx, code)
+		if err != nil {
+			result.Error = fmt.Sprintf("REPL execution failed: %v", err)
+			break
+		}
+
+		// Check if FINAL() was called
+		hasFinal, err := w.HasFinalOutput(ctx)
+		if err != nil {
+			slog.Warn("Failed to check FINAL output", "error", err)
+		}
+
+		if hasFinal {
+			// Get the final output
+			finalOutput, err := w.GetFinalOutputWithMetadata(ctx)
+			if err != nil {
+				result.Error = fmt.Sprintf("failed to get FINAL output: %v", err)
+				break
+			}
+			if finalOutput != nil {
+				result.FinalOutput = finalOutput.Content
+				result.FinalType = finalOutput.Type
+				result.FinalMetadata = finalOutput.Metadata
+			}
+			break
+		}
+
+		// Build execution feedback for next iteration
+		feedback := w.buildExecutionFeedback(execResult)
+
+		conversation = append(conversation,
+			conversationMessage{Role: "assistant", Content: "```python\n" + code + "\n```"},
+			conversationMessage{Role: "user", Content: feedback},
+		)
+
+		slog.Debug("RLM iteration",
+			"iteration", iteration+1,
+			"has_output", execResult.Output != "",
+			"has_error", execResult.Error != "",
+			"return_val", truncate(execResult.ReturnVal, 100))
+	}
+
 	result.Duration = time.Since(result.StartTime)
-	result.Note = "RLM execution loop requires agent integration"
+
+	// If we exhausted iterations without FINAL, note it
+	if result.FinalOutput == "" && result.Error == "" && result.Iterations >= cfg.MaxIterations {
+		result.Error = fmt.Sprintf("max iterations (%d) reached without FINAL() call", cfg.MaxIterations)
+	}
 
 	return result, nil
+}
+
+// conversationMessage represents a message in the RLM conversation.
+type conversationMessage struct {
+	Role    string
+	Content string
+}
+
+// formatConversation formats the conversation for the LLM.
+func (w *Wrapper) formatConversation(messages []conversationMessage) string {
+	var sb strings.Builder
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case "system":
+			sb.WriteString("<system>\n")
+			sb.WriteString(msg.Content)
+			sb.WriteString("\n</system>\n\n")
+		case "user":
+			sb.WriteString("User: ")
+			sb.WriteString(msg.Content)
+			sb.WriteString("\n\n")
+		case "assistant":
+			sb.WriteString("Assistant: ")
+			sb.WriteString(msg.Content)
+			sb.WriteString("\n\n")
+		}
+	}
+
+	sb.WriteString("Assistant: ")
+	return sb.String()
+}
+
+// buildExecutionFeedback creates feedback message from REPL execution.
+func (w *Wrapper) buildExecutionFeedback(result *repl.ExecuteResult) string {
+	var sb strings.Builder
+
+	sb.WriteString("Code executed. ")
+
+	if result.Error != "" {
+		sb.WriteString("Error:\n```\n")
+		sb.WriteString(result.Error)
+		sb.WriteString("\n```\n")
+		sb.WriteString("Please fix the error and try again.")
+		return sb.String()
+	}
+
+	if result.Output != "" {
+		sb.WriteString("Output:\n```\n")
+		sb.WriteString(truncate(result.Output, 2000))
+		sb.WriteString("\n```\n")
+	}
+
+	if result.ReturnVal != "" && result.ReturnVal != "None" {
+		sb.WriteString("Return value: ")
+		sb.WriteString(truncate(result.ReturnVal, 500))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\nContinue exploring the context or call FINAL(response) when you have your answer.")
+
+	return sb.String()
+}
+
+// extractPythonCode extracts Python code from an LLM response.
+// Looks for ```python blocks or bare code that looks like Python.
+func extractPythonCode(response string) string {
+	// Try to find ```python blocks first
+	if idx := strings.Index(response, "```python"); idx != -1 {
+		start := idx + len("```python")
+		// Skip whitespace after ```python
+		for start < len(response) && (response[start] == '\n' || response[start] == '\r') {
+			start++
+		}
+
+		end := strings.Index(response[start:], "```")
+		if end != -1 {
+			return strings.TrimSpace(response[start : start+end])
+		}
+		// No closing ```, take the rest
+		return strings.TrimSpace(response[start:])
+	}
+
+	// Try generic ``` blocks
+	if idx := strings.Index(response, "```"); idx != -1 {
+		start := idx + 3
+		// Skip language identifier and newline
+		if nl := strings.Index(response[start:], "\n"); nl != -1 && nl < 20 {
+			start += nl + 1
+		}
+
+		end := strings.Index(response[start:], "```")
+		if end != -1 {
+			code := strings.TrimSpace(response[start : start+end])
+			// Verify it looks like Python
+			if looksLikePython(code) {
+				return code
+			}
+		}
+	}
+
+	return ""
+}
+
+// looksLikePython checks if code appears to be Python.
+func looksLikePython(code string) bool {
+	pythonIndicators := []string{
+		"def ", "class ", "import ", "from ", "if ", "for ", "while ",
+		"print(", "return ", "FINAL(", "llm_call(", "peek(", "grep(",
+		"partition(", "memory_", "= ", "==", "!=",
+	}
+
+	for _, indicator := range pythonIndicators {
+		if strings.Contains(code, indicator) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeFinalAnswer checks if a response appears to be a final answer
+// rather than code that should be executed.
+func looksLikeFinalAnswer(response string) bool {
+	// If it contains code blocks, it's not a final answer
+	if strings.Contains(response, "```") {
+		return false
+	}
+
+	// If it's very short and doesn't have Python syntax, might be final
+	if len(response) < 500 && !looksLikePython(response) {
+		// Check for answer-like phrases
+		answerPhrases := []string{
+			"the answer is", "in conclusion", "to summarize",
+			"based on my analysis", "the result is", "i found that",
+		}
+		responseLower := strings.ToLower(response)
+		for _, phrase := range answerPhrases {
+			if strings.Contains(responseLower, phrase) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // RLMExecutionResult contains the result of RLM execution.
 type RLMExecutionResult struct {
 	// FinalOutput is the result from FINAL() if called.
 	FinalOutput string
+
+	// FinalType is the type of the final output (text, json, code, markdown).
+	FinalType string
+
+	// FinalMetadata contains additional metadata from the final output.
+	FinalMetadata map[string]string
 
 	// Iterations is how many code execution rounds occurred.
 	Iterations int
