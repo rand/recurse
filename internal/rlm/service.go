@@ -445,6 +445,12 @@ func (s *Service) SetREPLManager(replMgr *repl.Manager) {
 	if s.wrapper != nil {
 		s.wrapper.SetREPLManager(replMgr)
 	}
+
+	// Wire up the callback handler so Python's llm_call() works
+	if replMgr != nil && s.subCallRouter != nil {
+		handler := NewREPLCallbackHandler(s.subCallRouter)
+		replMgr.SetCallbackHandler(handler)
+	}
 }
 
 // Wrapper returns the RLM wrapper for context externalization.

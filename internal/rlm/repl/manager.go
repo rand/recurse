@@ -34,6 +34,9 @@ type Manager struct {
 
 	// workDir is the working directory for the REPL.
 	workDir string
+
+	// callbackHandler handles LLM callbacks from Python during execution.
+	callbackHandler CallbackHandler
 }
 
 // Options configures the REPL manager.
@@ -250,18 +253,179 @@ func (m *Manager) Running() bool {
 	return m.running.Load()
 }
 
+// SetCallbackHandler sets the handler for LLM callbacks from Python.
+// This must be set before Execute() to enable llm_call() in Python code.
+func (m *Manager) SetCallbackHandler(handler CallbackHandler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callbackHandler = handler
+}
+
 // Execute runs Python code and returns the result.
+// If the code calls llm_call() or llm_batch(), these are handled via callbacks
+// to the registered CallbackHandler.
 func (m *Manager) Execute(ctx context.Context, code string) (*ExecuteResult, error) {
-	resp, err := m.call(ctx, "execute", ExecuteParams{Code: code})
-	if err != nil {
-		return nil, err
+	return m.executeWithCallbacks(ctx, code)
+}
+
+// executeWithCallbacks handles code execution with potential LLM callbacks.
+func (m *Manager) executeWithCallbacks(ctx context.Context, code string) (*ExecuteResult, error) {
+	if !m.running.Load() {
+		return nil, fmt.Errorf("REPL not running")
 	}
 
-	var result ExecuteResult
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return nil, fmt.Errorf("unmarshal result: %w", err)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	id := m.reqID.Add(1)
+	req, err := encodeRequest(id, "execute", ExecuteParams{Code: code})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
 	}
-	return &result, nil
+
+	// Send execute request
+	if _, err := m.stdin.Write(req); err != nil {
+		return nil, fmt.Errorf("write request: %w", err)
+	}
+	if _, err := m.stdin.Write([]byte("\n")); err != nil {
+		return nil, fmt.Errorf("write newline: %w", err)
+	}
+
+	// Read response with timeout, handling callbacks
+	timeout := m.sandbox.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	deadline := time.Now().Add(timeout)
+
+	for {
+		// Check context and timeout
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout after %v", timeout)
+		}
+
+		// Read next line
+		lineCh := make(chan string, 1)
+		errCh := make(chan error, 1)
+		go func() {
+			line, err := m.stdout.ReadString('\n')
+			if err != nil {
+				errCh <- fmt.Errorf("read response: %w", err)
+				return
+			}
+			lineCh <- line
+		}()
+
+		var line string
+		select {
+		case line = <-lineCh:
+		case err := <-errCh:
+			return nil, err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Until(deadline)):
+			return nil, fmt.Errorf("timeout after %v", timeout)
+		}
+
+		lineBytes := []byte(line)
+
+		// Check if this is a callback request
+		if IsCallbackRequest(lineBytes) {
+			if err := m.handleCallback(ctx, lineBytes); err != nil {
+				return nil, fmt.Errorf("handle callback: %w", err)
+			}
+			continue // Read next line
+		}
+
+		// Must be the final response
+		resp, err := decodeResponse(lineBytes)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Error != nil {
+			return nil, resp.Error
+		}
+
+		var result ExecuteResult
+		if err := json.Unmarshal(resp.Result, &result); err != nil {
+			return nil, fmt.Errorf("unmarshal result: %w", err)
+		}
+		return &result, nil
+	}
+}
+
+// handleCallback processes a callback request from Python and sends the response.
+func (m *Manager) handleCallback(ctx context.Context, data []byte) error {
+	req, err := DecodeCallbackRequest(data)
+	if err != nil {
+		return err
+	}
+
+	var resp CallbackResponse
+	resp.CallbackID = req.CallbackID
+
+	if m.callbackHandler == nil {
+		resp.Error = "LLM callback handler not configured"
+	} else {
+		switch req.Callback {
+		case "llm_call":
+			prompt, _ := req.Params["prompt"].(string)
+			context, _ := req.Params["context"].(string)
+			model, _ := req.Params["model"].(string)
+
+			result, err := m.callbackHandler.HandleLLMCall(prompt, context, model)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				resp.Result = result
+			}
+
+		case "llm_batch":
+			promptsRaw, _ := req.Params["prompts"].([]interface{})
+			contextsRaw, _ := req.Params["contexts"].([]interface{})
+			model, _ := req.Params["model"].(string)
+
+			prompts := make([]string, len(promptsRaw))
+			for i, p := range promptsRaw {
+				prompts[i], _ = p.(string)
+			}
+			contexts := make([]string, len(contextsRaw))
+			for i, c := range contextsRaw {
+				contexts[i], _ = c.(string)
+			}
+
+			results, err := m.callbackHandler.HandleLLMBatch(prompts, contexts, model)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				resp.Results = results
+			}
+
+		default:
+			resp.Error = fmt.Sprintf("unknown callback: %s", req.Callback)
+		}
+	}
+
+	// Send response back to Python
+	respBytes, err := EncodeCallbackResponse(&resp)
+	if err != nil {
+		return fmt.Errorf("encode callback response: %w", err)
+	}
+
+	if _, err := m.stdin.Write(respBytes); err != nil {
+		return fmt.Errorf("write callback response: %w", err)
+	}
+	if _, err := m.stdin.Write([]byte("\n")); err != nil {
+		return fmt.Errorf("write newline: %w", err)
+	}
+
+	return nil
 }
 
 // SetVar stores a string value as a named variable in the REPL.

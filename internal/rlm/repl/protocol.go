@@ -122,3 +122,69 @@ func decodeResponse(data []byte) (*Response, error) {
 	}
 	return &resp, nil
 }
+
+// =============================================================================
+// Callback Protocol - enables Python to make LLM calls back to Go during execution
+// =============================================================================
+
+// CallbackRequest is sent by Python when it needs to make an LLM call.
+type CallbackRequest struct {
+	Callback   string                 `json:"callback"`    // "llm_call" or "llm_batch"
+	CallbackID int64                  `json:"callback_id"` // unique ID for this callback
+	Params     map[string]interface{} `json:"params"`      // callback-specific params
+}
+
+// LLMCallParams contains parameters for an llm_call callback.
+type LLMCallParams struct {
+	Prompt  string `json:"prompt"`
+	Context string `json:"context"`
+	Model   string `json:"model"` // "fast", "balanced", "powerful", "reasoning", "auto"
+}
+
+// LLMBatchParams contains parameters for an llm_batch callback.
+type LLMBatchParams struct {
+	Prompts  []string `json:"prompts"`
+	Contexts []string `json:"contexts"`
+	Model    string   `json:"model"`
+}
+
+// CallbackResponse is sent by Go in response to a callback request.
+type CallbackResponse struct {
+	CallbackID int64  `json:"callback_id"`
+	Result     string `json:"result,omitempty"` // for single calls
+	Results    []string `json:"results,omitempty"` // for batch calls
+	Error      string `json:"error,omitempty"`
+}
+
+// IsCallbackRequest checks if a JSON line is a callback request.
+func IsCallbackRequest(data []byte) bool {
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return false
+	}
+	_, hasCallback := m["callback"]
+	return hasCallback
+}
+
+// DecodeCallbackRequest parses a callback request.
+func DecodeCallbackRequest(data []byte) (*CallbackRequest, error) {
+	var req CallbackRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("unmarshal callback request: %w", err)
+	}
+	return &req, nil
+}
+
+// EncodeCallbackResponse creates a JSON-encoded callback response.
+func EncodeCallbackResponse(resp *CallbackResponse) ([]byte, error) {
+	return json.Marshal(resp)
+}
+
+// CallbackHandler is the interface for handling LLM callbacks from Python.
+type CallbackHandler interface {
+	// HandleLLMCall handles a single LLM call from Python.
+	HandleLLMCall(prompt, context, model string) (string, error)
+
+	// HandleLLMBatch handles a batch of LLM calls from Python.
+	HandleLLMBatch(prompts, contexts []string, model string) ([]string, error)
+}

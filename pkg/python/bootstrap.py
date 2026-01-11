@@ -265,17 +265,51 @@ def count_tokens_approx(text: str) -> int:
     return len(text) // 4
 
 
-# Placeholder for LLM calls - these will be implemented by the Go side
-# to enable recursive sub-LLM calls from within the REPL
+# =============================================================================
+# LLM Callback Protocol
+# =============================================================================
+# These functions use a callback protocol to make LLM calls back to Go.
+# During execution, Python sends a callback request to stdout and reads
+# the response from stdin.
 
-_llm_call_handler = None
+_callback_id_counter = 0
 _final_output = None
+_callback_enabled = True  # Can be disabled for testing
 
 
-def register_llm_handler(handler):
-    """Register the LLM call handler (called by Go runtime)."""
-    global _llm_call_handler
-    _llm_call_handler = handler
+def _make_callback(callback_type: str, params: dict) -> dict:
+    """
+    Make a synchronous callback to Go and return the response.
+
+    Protocol:
+    1. Write callback request JSON to stdout
+    2. Read callback response JSON from stdin
+    3. Return the response
+    """
+    global _callback_id_counter
+    _callback_id_counter += 1
+
+    request = {
+        "callback": callback_type,
+        "callback_id": _callback_id_counter,
+        "params": params
+    }
+
+    # Send request to Go via stdout
+    sys.stdout.write(json.dumps(request) + "\n")
+    sys.stdout.flush()
+
+    # Read response from Go via stdin
+    response_line = sys.stdin.readline()
+    if not response_line:
+        raise RuntimeError("EOF while waiting for callback response")
+
+    response = json.loads(response_line)
+
+    if response.get("error"):
+        raise RuntimeError(f"LLM callback error: {response['error']}")
+
+    return response
 
 
 def llm_call(prompt: str, context: str = "", model: str = "auto") -> str:
@@ -297,10 +331,20 @@ def llm_call(prompt: str, context: str = "", model: str = "auto") -> str:
         >>> summary = llm_call("Summarize this code", context=chunk)
         >>> answer = llm_call("What does this function do?", context=func_body)
     """
-    if _llm_call_handler is None:
-        # Return placeholder when not connected to Go runtime
+    if not _callback_enabled:
+        # Return placeholder when callbacks are disabled (for testing)
         return f"[LLM_CALL: prompt={prompt[:50]}..., context_len={len(context)}, model={model}]"
-    return _llm_call_handler(prompt, context, model)
+
+    try:
+        response = _make_callback("llm_call", {
+            "prompt": prompt,
+            "context": context,
+            "model": model
+        })
+        return response.get("result", "")
+    except Exception as e:
+        # Fallback to placeholder if callback fails
+        return f"[LLM_CALL_ERROR: {e}]"
 
 
 def llm_batch(prompts: list[str], contexts: list[str] = None, model: str = "auto") -> list[str]:
@@ -327,7 +371,32 @@ def llm_batch(prompts: list[str], contexts: list[str] = None, model: str = "auto
     if len(prompts) != len(contexts):
         raise ValueError("prompts and contexts must have same length")
 
-    return [llm_call(p, c, model) for p, c in zip(prompts, contexts)]
+    if not _callback_enabled:
+        # Return placeholders when callbacks are disabled
+        return [f"[LLM_BATCH: prompt={p[:30]}...]" for p in prompts]
+
+    try:
+        response = _make_callback("llm_batch", {
+            "prompts": prompts,
+            "contexts": contexts,
+            "model": model
+        })
+        return response.get("results", [""] * len(prompts))
+    except Exception as e:
+        # Fallback to individual calls if batch fails
+        return [llm_call(p, c, model) for p, c in zip(prompts, contexts)]
+
+
+def disable_callbacks():
+    """Disable LLM callbacks (for testing without Go runtime)."""
+    global _callback_enabled
+    _callback_enabled = False
+
+
+def enable_callbacks():
+    """Enable LLM callbacks (default)."""
+    global _callback_enabled
+    _callback_enabled = True
 
 
 def FINAL(response: str) -> str:
@@ -391,6 +460,8 @@ class REPLNamespace:
             "FINAL": FINAL,
             "get_final_output": get_final_output,
             "clear_final_output": clear_final_output,
+            "disable_callbacks": disable_callbacks,
+            "enable_callbacks": enable_callbacks,
         }
         if PYDANTIC_AVAILABLE:
             self._globals["pydantic"] = pydantic
@@ -443,6 +514,7 @@ class REPLNamespace:
             "RLMContext", "peek", "grep", "partition", "partition_by_lines",
             "extract_functions", "count_tokens_approx", "llm_call", "llm_batch",
             "FINAL", "get_final_output", "clear_final_output",
+            "disable_callbacks", "enable_callbacks",
         }
 
         for name, value in new_globals.items():
