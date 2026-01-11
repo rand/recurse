@@ -698,6 +698,11 @@ func allToolNames() []string {
 		"todos",
 		"view",
 		"write",
+		// RLM tools for Python REPL
+		"rlm_execute",
+		"rlm_peek",
+		"rlm_externalize",
+		"rlm_status",
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 	"github.com/rand/recurse/internal/message"
 	"github.com/rand/recurse/internal/oauth/copilot"
 	"github.com/rand/recurse/internal/permission"
+	"github.com/rand/recurse/internal/rlm/repl"
 	"github.com/rand/recurse/internal/session"
 	"golang.org/x/sync/errgroup"
 
@@ -65,6 +66,8 @@ type coordinator struct {
 	permissions permission.Service
 	history     history.Service
 	lspClients  *csync.Map[string, *lsp.Client]
+	replManager *repl.Manager
+	rlmTracer   tools.RLMTraceRecorder
 
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
@@ -80,6 +83,8 @@ func NewCoordinator(
 	permissions permission.Service,
 	history history.Service,
 	lspClients *csync.Map[string, *lsp.Client],
+	replManager *repl.Manager,
+	rlmTracer tools.RLMTraceRecorder,
 ) (Coordinator, error) {
 	c := &coordinator{
 		cfg:         cfg,
@@ -88,6 +93,8 @@ func NewCoordinator(
 		permissions: permissions,
 		history:     history,
 		lspClients:  lspClients,
+		replManager: replManager,
+		rlmTracer:   rlmTracer,
 		agents:      make(map[string]SessionAgent),
 	}
 
@@ -397,6 +404,16 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent) ([]fan
 
 	if len(c.cfg.LSP) > 0 {
 		allTools = append(allTools, tools.NewDiagnosticsTool(c.lspClients), tools.NewReferencesTool(c.lspClients))
+	}
+
+	// Add RLM tools if REPL Manager is available
+	if c.replManager != nil {
+		allTools = append(allTools,
+			tools.NewRLMExecuteTool(c.replManager, c.rlmTracer),
+			tools.NewRLMPeekTool(c.replManager),
+			tools.NewRLMExternalizeTool(c.replManager),
+			tools.NewRLMStatusTool(c.replManager),
+		)
 	}
 
 	var filteredTools []fantasy.AgentTool

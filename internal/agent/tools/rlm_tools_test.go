@@ -98,7 +98,7 @@ func TestRLMExecuteTool(t *testing.T) {
 
 	ctx := context.Background()
 
-	tool := NewRLMExecuteTool(mgr)
+	tool := NewRLMExecuteTool(mgr, nil)
 
 	// Test simple expression
 	resp, err := tool.Run(ctx, makeToolCall(t, map[string]any{
@@ -168,7 +168,7 @@ func TestRLMToolsIntegration(t *testing.T) {
 
 	externalize := NewRLMExternalizeTool(mgr)
 	peek := NewRLMPeekTool(mgr)
-	execute := NewRLMExecuteTool(mgr)
+	execute := NewRLMExecuteTool(mgr, nil)
 
 	// Workflow: externalize -> peek -> execute
 	sampleCode := `def greet(name):

@@ -27,7 +27,6 @@ import (
 	"github.com/rand/recurse/internal/tui/components/mcp"
 	"github.com/rand/recurse/internal/tui/styles"
 	"github.com/rand/recurse/internal/tui/util"
-	"github.com/rand/recurse/internal/version"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -278,15 +277,7 @@ func (m *sidebarCmp) GetSize() (int, int) {
 }
 
 func (m *sidebarCmp) logoBlock() string {
-	t := styles.CurrentTheme()
-	return logo.Render(version.Version, true, logo.Opts{
-		FieldColor:   t.Primary,
-		TitleColorA:  t.Secondary,
-		TitleColorB:  t.Primary,
-		CharmColor:   t.Secondary,
-		VersionColor: t.Primary,
-		Width:        m.width - 2,
-	})
+	return logo.SmallRender(m.width - 2)
 }
 
 func (m *sidebarCmp) getMaxWidth() int {

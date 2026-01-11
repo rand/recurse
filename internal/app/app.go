@@ -21,6 +21,7 @@ import (
 	"github.com/rand/recurse/internal/agent/tools/mcp"
 	"github.com/rand/recurse/internal/config"
 	"github.com/rand/recurse/internal/rlm"
+	"github.com/rand/recurse/internal/rlm/repl"
 	"github.com/rand/recurse/internal/csync"
 	"github.com/rand/recurse/internal/db"
 	"github.com/rand/recurse/internal/format"
@@ -51,6 +52,9 @@ type App struct {
 
 	// RLM is the Recursive Language Model service for orchestration.
 	RLM *rlm.Service
+
+	// REPLManager manages the Python REPL for code execution.
+	REPLManager *repl.Manager
 
 	LSPClients *csync.Map[string, *lsp.Client]
 
@@ -115,13 +119,37 @@ func New(ctx context.Context, conn *sql.DB, cfg *config.Config) (*App, error) {
 		slog.Warn("No agent configuration found")
 		return app, nil
 	}
-	if err := app.InitCoderAgent(ctx); err != nil {
-		return nil, fmt.Errorf("failed to initialize coder agent: %w", err)
+
+	// Initialize REPL Manager for Python execution (optional - non-fatal if it fails)
+	replMgr, err := repl.NewManager(repl.Options{
+		WorkDir: cfg.WorkingDir(),
+	})
+	if err != nil {
+		slog.Warn("Failed to create REPL manager", "error", err)
+	} else {
+		app.REPLManager = replMgr
+		slog.Info("REPL manager created", "workdir", cfg.WorkingDir())
+		// Start REPL in background
+		go func() {
+			if err := replMgr.Start(ctx); err != nil {
+				slog.Warn("Failed to start REPL", "error", err)
+			} else {
+				slog.Info("Python REPL started successfully")
+			}
+		}()
+		app.cleanupFuncs = append(app.cleanupFuncs, func() error {
+			return replMgr.Stop()
+		})
 	}
 
-	// Initialize RLM service (optional - non-fatal if it fails)
+	// Initialize RLM service before coordinator (optional - non-fatal if it fails)
+	// The coordinator needs the RLM service for trace recording
 	if err := app.InitRLM(ctx); err != nil {
 		slog.Warn("Failed to initialize RLM service", "error", err)
+	}
+
+	if err := app.InitCoderAgent(ctx); err != nil {
+		return nil, fmt.Errorf("failed to initialize coder agent: %w", err)
 	}
 
 	return app, nil
@@ -358,6 +386,8 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		app.Permissions,
 		app.History,
 		app.LSPClients,
+		app.REPLManager,
+		app.RLM, // Pass RLM service as trace recorder (may be nil)
 	)
 	if err != nil {
 		slog.Error("Failed to create coder agent", "err", err)

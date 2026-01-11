@@ -384,3 +384,20 @@ func (s *Service) GetTraceStats() rlmtrace.TraceStats {
 func (s *Service) ClearTrace() error {
 	return s.tracer.ClearEvents()
 }
+
+// RecordTraceEvent records a trace event from external callers (e.g., rlm_execute tool).
+func (s *Service) RecordTraceEvent(event rlmtrace.TraceEvent) error {
+	internalEvent := TraceEvent{
+		ID:        event.ID,
+		Type:      string(event.Type),
+		Action:    event.Action,
+		Details:   event.Details,
+		Tokens:    event.Tokens,
+		Duration:  event.Duration,
+		Timestamp: event.Timestamp,
+		Depth:     event.Depth,
+		ParentID:  event.ParentID,
+		Status:    event.Status,
+	}
+	return s.tracer.RecordEvent(internalEvent)
+}

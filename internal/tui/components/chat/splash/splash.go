@@ -719,7 +719,7 @@ func (s *splashCmp) logoBlock() string {
 			FieldColor:   t.Primary,
 			TitleColorA:  t.Secondary,
 			TitleColorB:  t.Primary,
-			CharmColor:   t.Secondary,
+			BrandColor:   t.Secondary,
 			VersionColor: t.Primary,
 			Width:        s.width - logoStyle.GetHorizontalFrameSize(),
 		}),

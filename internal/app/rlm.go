@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 
 	"charm.land/fantasy"
@@ -12,22 +13,14 @@ import (
 	"github.com/rand/recurse/internal/rlm/meta"
 )
 
-// InitRLM initializes the RLM service if an Anthropic provider is configured.
+// InitRLM initializes the RLM service with intelligent model routing.
+// Prefers OpenRouter (multi-model routing) when available, falls back to Anthropic.
 func (app *App) InitRLM(ctx context.Context) error {
-	// Find an Anthropic provider for the meta-controller
-	provider, err := app.findAnthropicProvider()
+	// Try OpenRouter first for intelligent model routing
+	llmClient, clientType, err := app.createRLMClient()
 	if err != nil {
-		slog.Info("RLM not initialized: no Anthropic provider configured", "error", err)
+		slog.Info("RLM not initialized: no LLM provider available", "error", err)
 		return nil // Non-fatal - RLM is optional
-	}
-
-	// Create Haiku client for meta-controller
-	haikuClient, err := meta.NewHaikuClient(meta.HaikuConfig{
-		Provider: provider,
-		Model:    "claude-3-5-haiku-latest",
-	})
-	if err != nil {
-		return fmt.Errorf("create haiku client: %w", err)
 	}
 
 	// Configure RLM service
@@ -38,7 +31,7 @@ func (app *App) InitRLM(ctx context.Context) error {
 	rlmCfg.TracePath = filepath.Join(app.config.Options.DataDirectory, "rlm_trace.db")
 
 	// Create service
-	svc, err := rlm.NewService(haikuClient, rlmCfg)
+	svc, err := rlm.NewService(llmClient, rlmCfg)
 	if err != nil {
 		return fmt.Errorf("create RLM service: %w", err)
 	}
@@ -59,8 +52,44 @@ func (app *App) InitRLM(ctx context.Context) error {
 		return nil
 	})
 
-	slog.Info("RLM service initialized", "store", rlmCfg.StorePath, "trace", rlmCfg.TracePath)
+	slog.Info("RLM service initialized",
+		"provider", clientType,
+		"store", rlmCfg.StorePath,
+		"trace", rlmCfg.TracePath)
 	return nil
+}
+
+// createRLMClient creates the best available LLM client for RLM.
+// Tries OpenRouter first (intelligent routing), then Anthropic (single model).
+func (app *App) createRLMClient() (meta.LLMClient, string, error) {
+	// Try OpenRouter first (enables intelligent multi-model routing)
+	if apiKey := os.Getenv("OPENROUTER_API_KEY"); apiKey != "" {
+		client, err := meta.NewOpenRouterClient(meta.OpenRouterConfig{
+			APIKey: apiKey,
+		})
+		if err == nil {
+			slog.Info("RLM using OpenRouter with intelligent model routing")
+			return client, "openrouter", nil
+		}
+		slog.Warn("Failed to create OpenRouter client, trying Anthropic", "error", err)
+	}
+
+	// Fall back to Anthropic (single model - Haiku)
+	provider, err := app.findAnthropicProvider()
+	if err != nil {
+		return nil, "", fmt.Errorf("no LLM provider available: %w", err)
+	}
+
+	client, err := meta.NewHaikuClient(meta.HaikuConfig{
+		Provider: provider,
+		Model:    "claude-3-5-haiku-latest",
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("create Haiku client: %w", err)
+	}
+
+	slog.Info("RLM using Anthropic Haiku (single model)")
+	return client, "anthropic-haiku", nil
 }
 
 // findAnthropicProvider finds an Anthropic provider from the config.
