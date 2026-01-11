@@ -1,0 +1,8 @@
+# Recurse Python REPL dependencies
+# Installed via uv into isolated venv
+
+# Core runtime
+pydantic>=2.0
+
+# Development tools (installed with uv sync --dev)
+# ruff>=0.8.0  # linting/formatting

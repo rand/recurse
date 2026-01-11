@@ -51,3 +51,4 @@ ENV/
 # Temporary files
 /tmp/
 *.tmp
+.reasoning_logs/
