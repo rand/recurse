@@ -28,6 +28,342 @@ except ImportError:
     PYDANTIC_AVAILABLE = False
 
 
+# =============================================================================
+# RLM Helper Functions
+# =============================================================================
+# These functions implement the "Recursive Language Model" paradigm where
+# context is externalized as manipulable Python variables. The LLM writes
+# code to peek, grep, partition, and transform context rather than ingesting
+# it directly.
+
+
+class RLMContext:
+    """Wrapper for externalized context with helper methods."""
+
+    def __init__(self, content: str, name: str = "context", metadata: dict = None):
+        self.content = content
+        self.name = name
+        self.metadata = metadata or {}
+        self._lines = None
+
+    @property
+    def lines(self) -> list[str]:
+        """Lazily split content into lines."""
+        if self._lines is None:
+            self._lines = self.content.split('\n')
+        return self._lines
+
+    def __len__(self) -> int:
+        return len(self.content)
+
+    def __str__(self) -> str:
+        return self.content
+
+    def __repr__(self) -> str:
+        preview = self.content[:100] + "..." if len(self.content) > 100 else self.content
+        return f"RLMContext({self.name!r}, len={len(self)}, preview={preview!r})"
+
+    def __getitem__(self, key):
+        """Support slicing."""
+        return self.content[key]
+
+
+def peek(ctx, start: int = 0, end: int = None, by_lines: bool = False) -> str:
+    """
+    View a slice of context.
+
+    Args:
+        ctx: Context string or RLMContext object
+        start: Start index (character or line based on by_lines)
+        end: End index (exclusive), None for end of content
+        by_lines: If True, slice by line numbers instead of characters
+
+    Returns:
+        The sliced content as a string
+
+    Example:
+        >>> peek(context, 0, 1000)  # First 1000 chars
+        >>> peek(context, 0, 50, by_lines=True)  # First 50 lines
+    """
+    content = ctx.content if isinstance(ctx, RLMContext) else str(ctx)
+
+    if by_lines:
+        lines = content.split('\n')
+        if end is None:
+            selected = lines[start:]
+        else:
+            selected = lines[start:end]
+        return '\n'.join(selected)
+    else:
+        if end is None:
+            return content[start:]
+        return content[start:end]
+
+
+def grep(ctx, pattern: str, context_lines: int = 0, ignore_case: bool = True) -> list[dict]:
+    """
+    Search for pattern in context, returning matching lines with context.
+
+    Args:
+        ctx: Context string or RLMContext object
+        pattern: Regex pattern to search for
+        context_lines: Number of lines before/after each match to include
+        ignore_case: Whether to ignore case in pattern matching
+
+    Returns:
+        List of dicts with 'line_num', 'line', 'context_before', 'context_after'
+
+    Example:
+        >>> matches = grep(context, r"def \w+")
+        >>> matches = grep(context, "error", context_lines=2)
+    """
+    content = ctx.content if isinstance(ctx, RLMContext) else str(ctx)
+    lines = content.split('\n')
+
+    flags = re.IGNORECASE if ignore_case else 0
+    compiled = re.compile(pattern, flags)
+
+    results = []
+    for i, line in enumerate(lines):
+        if compiled.search(line):
+            result = {
+                'line_num': i + 1,  # 1-indexed
+                'line': line,
+            }
+            if context_lines > 0:
+                start = max(0, i - context_lines)
+                end = min(len(lines), i + context_lines + 1)
+                result['context_before'] = lines[start:i]
+                result['context_after'] = lines[i+1:end]
+            results.append(result)
+
+    return results
+
+
+def partition(ctx, n: int = 4, overlap: int = 0) -> list[str]:
+    """
+    Split context into n roughly equal chunks.
+
+    Args:
+        ctx: Context string or RLMContext object
+        n: Number of partitions to create
+        overlap: Number of characters to overlap between partitions
+
+    Returns:
+        List of string chunks
+
+    Example:
+        >>> chunks = partition(context, n=4)
+        >>> results = [process(chunk) for chunk in chunks]
+    """
+    content = ctx.content if isinstance(ctx, RLMContext) else str(ctx)
+
+    if n <= 0:
+        raise ValueError("n must be positive")
+    if len(content) == 0:
+        return [""] * n
+
+    chunk_size = len(content) // n
+    if chunk_size == 0:
+        chunk_size = 1
+
+    chunks = []
+    start = 0
+    for i in range(n):
+        if i == n - 1:
+            # Last chunk gets the remainder
+            chunks.append(content[start:])
+        else:
+            end = start + chunk_size + overlap
+            chunks.append(content[start:end])
+            start = start + chunk_size
+
+    return chunks
+
+
+def partition_by_lines(ctx, n: int = 4, overlap_lines: int = 0) -> list[str]:
+    """
+    Split context into n chunks by lines (respects line boundaries).
+
+    Args:
+        ctx: Context string or RLMContext object
+        n: Number of partitions
+        overlap_lines: Number of lines to overlap between chunks
+
+    Returns:
+        List of string chunks
+    """
+    content = ctx.content if isinstance(ctx, RLMContext) else str(ctx)
+    lines = content.split('\n')
+
+    if n <= 0:
+        raise ValueError("n must be positive")
+    if len(lines) == 0:
+        return [""] * n
+
+    chunk_size = len(lines) // n
+    if chunk_size == 0:
+        chunk_size = 1
+
+    chunks = []
+    start = 0
+    for i in range(n):
+        if i == n - 1:
+            selected = lines[start:]
+        else:
+            end = start + chunk_size + overlap_lines
+            selected = lines[start:end]
+            start = start + chunk_size
+        chunks.append('\n'.join(selected))
+
+    return chunks
+
+
+def extract_functions(ctx, language: str = "python") -> list[dict]:
+    """
+    Extract function definitions from code context.
+
+    Args:
+        ctx: Context string or RLMContext object
+        language: Programming language ('python', 'go', 'javascript', etc.)
+
+    Returns:
+        List of dicts with 'name', 'start_line', 'signature', 'body'
+    """
+    content = ctx.content if isinstance(ctx, RLMContext) else str(ctx)
+    lines = content.split('\n')
+
+    patterns = {
+        'python': r'^(\s*)(async\s+)?def\s+(\w+)\s*\((.*?)\)',
+        'go': r'^func\s+(?:\(.*?\)\s+)?(\w+)\s*\((.*?)\)',
+        'javascript': r'^(?:async\s+)?function\s+(\w+)\s*\((.*?)\)|^(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(',
+        'typescript': r'^(?:async\s+)?function\s+(\w+)|^(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(',
+    }
+
+    pattern = patterns.get(language, patterns['python'])
+    compiled = re.compile(pattern)
+
+    functions = []
+    for i, line in enumerate(lines):
+        match = compiled.search(line)
+        if match:
+            functions.append({
+                'name': match.group(3) if language == 'python' else match.group(1) or match.group(2) or match.group(3),
+                'start_line': i + 1,
+                'signature': line.strip(),
+            })
+
+    return functions
+
+
+def count_tokens_approx(text: str) -> int:
+    """
+    Approximate token count (roughly 4 chars per token).
+
+    This is a rough estimate - actual tokenization varies by model.
+    """
+    return len(text) // 4
+
+
+# Placeholder for LLM calls - these will be implemented by the Go side
+# to enable recursive sub-LLM calls from within the REPL
+
+_llm_call_handler = None
+_final_output = None
+
+
+def register_llm_handler(handler):
+    """Register the LLM call handler (called by Go runtime)."""
+    global _llm_call_handler
+    _llm_call_handler = handler
+
+
+def llm_call(prompt: str, context: str = "", model: str = "auto") -> str:
+    """
+    Make a sub-LLM call from within the REPL.
+
+    This is a key RLM feature - the root LLM can spawn sub-LLM calls
+    to process portions of context or perform specific subtasks.
+
+    Args:
+        prompt: The prompt to send to the LLM
+        context: Optional context to include
+        model: Model tier - 'fast', 'balanced', 'powerful', 'reasoning', or 'auto'
+
+    Returns:
+        The LLM's response string
+
+    Example:
+        >>> summary = llm_call("Summarize this code", context=chunk)
+        >>> answer = llm_call("What does this function do?", context=func_body)
+    """
+    if _llm_call_handler is None:
+        # Return placeholder when not connected to Go runtime
+        return f"[LLM_CALL: prompt={prompt[:50]}..., context_len={len(context)}, model={model}]"
+    return _llm_call_handler(prompt, context, model)
+
+
+def llm_batch(prompts: list[str], contexts: list[str] = None, model: str = "auto") -> list[str]:
+    """
+    Make batch LLM calls (for map operations over partitioned context).
+
+    Args:
+        prompts: List of prompts
+        contexts: Optional list of contexts (same length as prompts)
+        model: Model tier to use
+
+    Returns:
+        List of LLM responses
+
+    Example:
+        >>> chunks = partition(context, n=4)
+        >>> summaries = llm_batch(
+        ...     ["Summarize this section"] * 4,
+        ...     contexts=chunks
+        ... )
+    """
+    if contexts is None:
+        contexts = [""] * len(prompts)
+    if len(prompts) != len(contexts):
+        raise ValueError("prompts and contexts must have same length")
+
+    return [llm_call(p, c, model) for p, c in zip(prompts, contexts)]
+
+
+def FINAL(response: str) -> str:
+    """
+    Mark a response as the final output.
+
+    In the RLM paradigm, the LLM writes code that eventually calls FINAL()
+    with the response to return to the user. This signals that processing
+    is complete.
+
+    Args:
+        response: The final response string
+
+    Returns:
+        The response (also stored for retrieval)
+
+    Example:
+        >>> summary = llm_call("Summarize", context=full_context)
+        >>> FINAL(f"Here's the summary:\\n{summary}")
+    """
+    global _final_output
+    _final_output = response
+    return response
+
+
+def get_final_output():
+    """Get the final output if FINAL() was called."""
+    return _final_output
+
+
+def clear_final_output():
+    """Clear the final output (for new execution)."""
+    global _final_output
+    _final_output = None
+
+
 class REPLNamespace:
     """Manages the REPL namespace with variable tracking."""
 
@@ -42,6 +378,19 @@ class REPLNamespace:
             "itertools": itertools,
             "collections": collections,
             "Path": pathlib.Path,
+            # RLM helper functions
+            "RLMContext": RLMContext,
+            "peek": peek,
+            "grep": grep,
+            "partition": partition,
+            "partition_by_lines": partition_by_lines,
+            "extract_functions": extract_functions,
+            "count_tokens_approx": count_tokens_approx,
+            "llm_call": llm_call,
+            "llm_batch": llm_batch,
+            "FINAL": FINAL,
+            "get_final_output": get_final_output,
+            "clear_final_output": clear_final_output,
         }
         if PYDANTIC_AVAILABLE:
             self._globals["pydantic"] = pydantic
@@ -88,7 +437,13 @@ class REPLNamespace:
         """Update namespace after exec(), tracking new variables."""
         # Find new or changed variables
         builtins = set(dir(__builtins__)) if hasattr(__builtins__, '__iter__') else set()
-        stdlib = {"re", "json", "ast", "pathlib", "itertools", "collections", "Path", "pydantic"}
+        stdlib = {
+            "re", "json", "ast", "pathlib", "itertools", "collections", "Path", "pydantic",
+            # RLM helper functions
+            "RLMContext", "peek", "grep", "partition", "partition_by_lines",
+            "extract_functions", "count_tokens_approx", "llm_call", "llm_batch",
+            "FINAL", "get_final_output", "clear_final_output",
+        }
 
         for name, value in new_globals.items():
             if name.startswith("_"):

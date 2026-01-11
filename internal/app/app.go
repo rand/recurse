@@ -148,6 +148,12 @@ func New(ctx context.Context, conn *sql.DB, cfg *config.Config) (*App, error) {
 		slog.Warn("Failed to initialize RLM service", "error", err)
 	}
 
+	// Wire REPL manager to RLM service for context externalization
+	if app.RLM != nil && app.REPLManager != nil {
+		app.RLM.SetREPLManager(app.REPLManager)
+		slog.Info("RLM context externalization enabled via REPL")
+	}
+
 	if err := app.InitCoderAgent(ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize coder agent: %w", err)
 	}

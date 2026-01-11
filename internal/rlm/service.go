@@ -9,6 +9,7 @@ import (
 	"github.com/rand/recurse/internal/memory/evolution"
 	"github.com/rand/recurse/internal/memory/hypergraph"
 	"github.com/rand/recurse/internal/rlm/meta"
+	"github.com/rand/recurse/internal/rlm/repl"
 	"github.com/rand/recurse/internal/tui/components/dialogs/rlmtrace"
 )
 
@@ -142,8 +143,9 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 
 	// Create orchestrator for prompt pre-processing
 	orchestrator := NewOrchestrator(metaCtrl, OrchestratorConfig{
-		Enabled: config.OrchestratorEnabled,
-		Models:  meta.DefaultModels(),
+		Enabled:        config.OrchestratorEnabled,
+		Models:         meta.DefaultModels(),
+		ContextEnabled: true, // Enable context externalization by default
 	})
 
 	svc := &Service{
@@ -418,6 +420,14 @@ func (s *Service) RecordTraceEvent(event rlmtrace.TraceEvent) error {
 // Orchestrator returns the RLM orchestrator for prompt pre-processing.
 func (s *Service) Orchestrator() *Orchestrator {
 	return s.orchestrator
+}
+
+// SetREPLManager sets the REPL manager for context externalization.
+// This enables the true RLM paradigm where context is externalized to Python.
+func (s *Service) SetREPLManager(replMgr *repl.Manager) {
+	if s.orchestrator != nil {
+		s.orchestrator.SetREPLManager(replMgr)
+	}
 }
 
 // AnalyzePrompt performs RLM analysis on a user prompt.
