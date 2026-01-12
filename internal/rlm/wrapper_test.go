@@ -596,3 +596,146 @@ func TestRLMExecutionResult_Fields(t *testing.T) {
 	assert.Empty(t, result.Error)
 	assert.Equal(t, "test note", result.Note)
 }
+
+// TestSelectMode_ClassificationBased tests mode selection with task classification.
+func TestSelectMode_ClassificationBased(t *testing.T) {
+	// Create wrapper with classifier enabled and mock REPL manager
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+
+	// Mock REPL manager (just needs to be non-nil for mode selection)
+	ctx := context.Background()
+	replMgr, err := repl.NewManager(repl.Options{})
+	require.NoError(t, err)
+	require.NoError(t, replMgr.Start(ctx))
+	defer replMgr.Stop()
+	w.SetREPLManager(replMgr)
+
+	// Context for testing
+	contexts := []ContextSource{{Type: ContextTypeFile, Content: "test content"}}
+
+	tests := []struct {
+		name         string
+		query        string
+		tokens       int
+		wantMode     ExecutionMode
+		wantContains string // Substring expected in reason
+	}{
+		{
+			name:         "computational task selects RLM at low tokens",
+			query:        "How many times does 'error' appear in the text?",
+			tokens:       1000,
+			wantMode:     ModeRLM,
+			wantContains: "computational",
+		},
+		{
+			name:         "retrieval task selects Direct even at high tokens",
+			query:        "What is the secret access code mentioned in the text?",
+			tokens:       10000,
+			wantMode:     ModeDirecte,
+			wantContains: "retrieval",
+		},
+		{
+			name:         "analytical task at small context uses Direct",
+			query:        "Did Alice work with Bob?",
+			tokens:       2000,
+			wantMode:     ModeDirecte,
+			wantContains: "analytical",
+		},
+		{
+			name:         "analytical task at large context uses RLM",
+			query:        "Did Alice collaborate with Bob on the project?",
+			tokens:       10000,
+			wantMode:     ModeRLM,
+			wantContains: "analytical",
+		},
+		{
+			name:         "unknown task falls back to size threshold",
+			query:        "Tell me about the weather",
+			tokens:       5000,
+			wantMode:     ModeRLM,
+			wantContains: "context size",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Classify the query
+			classification := w.classifier.Classify(tt.query, contexts)
+
+			// Select mode
+			mode, reason := w.selectMode(tt.query, tt.tokens, contexts, &classification)
+
+			assert.Equal(t, tt.wantMode, mode, "mode mismatch for: %s", tt.query)
+			assert.Contains(t, reason, tt.wantContains, "reason should contain '%s', got: %s", tt.wantContains, reason)
+		})
+	}
+}
+
+// TestSelectMode_NoClassifier tests fallback when classifier is disabled.
+func TestSelectMode_NoClassifier(t *testing.T) {
+	svc := &Service{}
+	cfg := DefaultWrapperConfig()
+	cfg.DisableClassifier = true
+	w := NewWrapper(svc, cfg)
+
+	ctx := context.Background()
+	replMgr, err := repl.NewManager(repl.Options{})
+	require.NoError(t, err)
+	require.NoError(t, replMgr.Start(ctx))
+	defer replMgr.Stop()
+	w.SetREPLManager(replMgr)
+
+	assert.Nil(t, w.classifier, "classifier should be nil when disabled")
+
+	contexts := []ContextSource{{Type: ContextTypeFile, Content: "test"}}
+
+	// Without classifier, should fall back to size-based selection
+	mode, reason := w.selectMode("How many errors?", 5000, contexts, nil)
+	assert.Equal(t, ModeRLM, mode)
+	assert.Contains(t, reason, "context size")
+
+	mode, reason = w.selectMode("How many errors?", 1000, contexts, nil)
+	assert.Equal(t, ModeDirecte, mode)
+	assert.Contains(t, reason, "context size")
+}
+
+// TestPrepareContext_IncludesClassification tests that PrepareContext includes classification.
+func TestPrepareContext_IncludesClassification(t *testing.T) {
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+
+	ctx := context.Background()
+	replMgr, err := repl.NewManager(repl.Options{})
+	require.NoError(t, err)
+	require.NoError(t, replMgr.Start(ctx))
+	defer replMgr.Stop()
+	w.SetREPLManager(replMgr)
+
+	// Create context large enough for RLM consideration
+	largeContent := strings.Repeat("The customer ordered a apple. ", 500)
+	contexts := []ContextSource{{Type: ContextTypeFile, Content: largeContent}}
+
+	// Counting query should be classified as computational
+	prepared, err := w.PrepareContext(ctx, "How many times does 'apple' appear?", contexts)
+	require.NoError(t, err)
+
+	// Should have classification
+	require.NotNil(t, prepared.Classification, "should include classification")
+	assert.Equal(t, TaskTypeComputational, prepared.Classification.Type)
+	assert.NotEmpty(t, prepared.ModeReason)
+}
+
+// TestSelectMode_NoREPL tests that Direct is selected when REPL unavailable.
+func TestSelectMode_NoREPL(t *testing.T) {
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+	// Don't set REPL manager
+
+	contexts := []ContextSource{{Type: ContextTypeFile, Content: "test"}}
+	classification := Classification{Type: TaskTypeComputational, Confidence: 0.9}
+
+	mode, reason := w.selectMode("Count words", 10000, contexts, &classification)
+	assert.Equal(t, ModeDirecte, mode)
+	assert.Contains(t, reason, "REPL not available")
+}

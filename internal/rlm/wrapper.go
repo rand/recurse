@@ -20,10 +20,15 @@ type Wrapper struct {
 	replMgr       *repl.Manager
 	contextLoader *ContextLoader
 	client        meta.LLMClient
+	classifier    *TaskClassifier
 
 	// Thresholds for when to use RLM mode
-	minContextTokensForRLM int
-	maxDirectContextTokens int
+	minContextTokensForRLM            int
+	minContextTokensForComputational  int // Lower threshold for computational tasks
+	maxDirectContextTokens            int
+
+	// Classification settings
+	classificationConfidenceThreshold float64
 }
 
 // WrapperConfig configures the RLM wrapper.
@@ -31,15 +36,29 @@ type WrapperConfig struct {
 	// MinContextTokensForRLM is the minimum context size to trigger RLM mode.
 	MinContextTokensForRLM int
 
+	// MinContextTokensForComputational is the lower threshold for computational tasks.
+	// Computational tasks benefit from RLM even at smaller context sizes.
+	MinContextTokensForComputational int
+
 	// MaxDirectContextTokens is the max context to include directly (non-RLM).
 	MaxDirectContextTokens int
+
+	// ClassificationConfidenceThreshold is the minimum confidence for task-based mode selection.
+	// Below this threshold, falls back to size-based selection.
+	ClassificationConfidenceThreshold float64
+
+	// DisableClassifier disables task classification (use size-based selection only).
+	DisableClassifier bool
 }
 
 // DefaultWrapperConfig returns sensible defaults.
 func DefaultWrapperConfig() WrapperConfig {
 	return WrapperConfig{
-		MinContextTokensForRLM: 4000,  // ~16KB
-		MaxDirectContextTokens: 32000, // ~128KB
+		MinContextTokensForRLM:            4000,  // ~16KB - default threshold
+		MinContextTokensForComputational:  500,   // ~2KB - lower for computational tasks
+		MaxDirectContextTokens:            32000, // ~128KB
+		ClassificationConfidenceThreshold: 0.7,   // Require 70% confidence for task-based selection
+		DisableClassifier:                 false,
 	}
 }
 
@@ -48,15 +67,30 @@ func NewWrapper(svc *Service, cfg WrapperConfig) *Wrapper {
 	if cfg.MinContextTokensForRLM == 0 {
 		cfg.MinContextTokensForRLM = 4000
 	}
+	if cfg.MinContextTokensForComputational == 0 {
+		cfg.MinContextTokensForComputational = 500
+	}
 	if cfg.MaxDirectContextTokens == 0 {
 		cfg.MaxDirectContextTokens = 32000
 	}
-
-	return &Wrapper{
-		service:                svc,
-		minContextTokensForRLM: cfg.MinContextTokensForRLM,
-		maxDirectContextTokens: cfg.MaxDirectContextTokens,
+	if cfg.ClassificationConfidenceThreshold == 0 {
+		cfg.ClassificationConfidenceThreshold = 0.7
 	}
+
+	w := &Wrapper{
+		service:                           svc,
+		minContextTokensForRLM:            cfg.MinContextTokensForRLM,
+		minContextTokensForComputational:  cfg.MinContextTokensForComputational,
+		maxDirectContextTokens:            cfg.MaxDirectContextTokens,
+		classificationConfidenceThreshold: cfg.ClassificationConfidenceThreshold,
+	}
+
+	// Initialize classifier unless disabled
+	if !cfg.DisableClassifier {
+		w.classifier = NewTaskClassifier()
+	}
+
+	return w
 }
 
 // SetREPLManager sets the REPL manager for context externalization.
@@ -81,13 +115,31 @@ func (w *Wrapper) PrepareContext(ctx context.Context, prompt string, contexts []
 		totalTokens += estimateTokens(c.Content)
 	}
 
-	// Decide mode based on context size and availability
-	if w.shouldUseRLMMode(totalTokens, contexts) && w.contextLoader != nil {
-		return w.prepareRLMMode(ctx, prompt, contexts, totalTokens)
+	// Classify the task if classifier is available
+	var classification *Classification
+	if w.classifier != nil {
+		c := w.classifier.Classify(prompt, contexts)
+		classification = &c
+	}
+
+	// Decide mode based on classification and context size
+	mode, reason := w.selectMode(prompt, totalTokens, contexts, classification)
+
+	if mode == ModeRLM && w.contextLoader != nil {
+		prepared, err := w.prepareRLMMode(ctx, prompt, contexts, totalTokens)
+		if err != nil {
+			return nil, err
+		}
+		prepared.Classification = classification
+		prepared.ModeReason = reason
+		return prepared, nil
 	}
 
 	// Direct mode: include context in prompt
-	return w.prepareDirectMode(prompt, contexts), nil
+	prepared := w.prepareDirectMode(prompt, contexts)
+	prepared.Classification = classification
+	prepared.ModeReason = reason
+	return prepared, nil
 }
 
 // PreparedPrompt contains the result of context preparation.
@@ -104,6 +156,12 @@ type PreparedPrompt struct {
 	// Mode indicates which mode was selected.
 	Mode ExecutionMode
 
+	// ModeReason explains why this mode was selected.
+	ModeReason string
+
+	// Classification contains the task classification result (if classifier enabled).
+	Classification *Classification
+
 	// LoadedContext contains info about externalized context (RLM mode only).
 	LoadedContext *LoadedContext
 
@@ -119,22 +177,60 @@ const (
 	ModeRLM     ExecutionMode = "rlm"    // Externalize context to REPL
 )
 
-// shouldUseRLMMode determines if RLM mode should be used.
-func (w *Wrapper) shouldUseRLMMode(totalTokens int, contexts []ContextSource) bool {
-	// Use RLM mode if:
-	// 1. Context is large enough to benefit
-	// 2. REPL is available
-	// 3. There are actual contexts to externalize
+// selectMode determines which execution mode to use based on task classification and context size.
+// Returns the selected mode and a human-readable reason for the selection.
+func (w *Wrapper) selectMode(query string, totalTokens int, contexts []ContextSource, classification *Classification) (ExecutionMode, string) {
+	// Basic prerequisites for RLM
 	if len(contexts) == 0 {
-		return false
+		return ModeDirecte, "no context to externalize"
 	}
 	if w.replMgr == nil {
-		return false
+		return ModeDirecte, "REPL not available"
 	}
-	if totalTokens < w.minContextTokensForRLM {
-		return false
+
+	// Use classification if available and confident
+	if classification != nil && classification.Confidence >= w.classificationConfidenceThreshold {
+		switch classification.Type {
+		case TaskTypeComputational:
+			// Computational tasks benefit from RLM even at lower thresholds
+			if totalTokens >= w.minContextTokensForComputational {
+				return ModeRLM, fmt.Sprintf("computational task (%.0f%% confidence), tokens=%d >= %d",
+					classification.Confidence*100, totalTokens, w.minContextTokensForComputational)
+			}
+			return ModeDirecte, fmt.Sprintf("computational task but context too small (%d < %d tokens)",
+				totalTokens, w.minContextTokensForComputational)
+
+		case TaskTypeRetrieval:
+			// Retrieval tasks prefer Direct even for larger contexts
+			return ModeDirecte, fmt.Sprintf("retrieval task (%.0f%% confidence), Direct is faster",
+				classification.Confidence*100)
+
+		case TaskTypeAnalytical:
+			// Analytical tasks use RLM only for larger contexts
+			if totalTokens >= 8000 {
+				return ModeRLM, fmt.Sprintf("analytical task (%.0f%% confidence), large context (%d tokens)",
+					classification.Confidence*100, totalTokens)
+			}
+			return ModeDirecte, fmt.Sprintf("analytical task, context small enough for Direct (%d tokens)",
+				totalTokens)
+		}
 	}
-	return true
+
+	// Fall back to size-based selection
+	if totalTokens >= w.minContextTokensForRLM {
+		return ModeRLM, fmt.Sprintf("context size (%d tokens) >= threshold (%d)",
+			totalTokens, w.minContextTokensForRLM)
+	}
+
+	return ModeDirecte, fmt.Sprintf("context size (%d tokens) < threshold (%d)",
+		totalTokens, w.minContextTokensForRLM)
+}
+
+// shouldUseRLMMode is a simplified check for backward compatibility.
+// Deprecated: Use selectMode for full classification support.
+func (w *Wrapper) shouldUseRLMMode(totalTokens int, contexts []ContextSource) bool {
+	mode, _ := w.selectMode("", totalTokens, contexts, nil)
+	return mode == ModeRLM
 }
 
 // prepareRLMMode prepares for RLM-style execution.
