@@ -86,9 +86,11 @@ func (s *permissionService) GrantPersistent(permission PermissionRequest) {
 	s.sessionPermissions = append(s.sessionPermissions, permission)
 	s.sessionPermissionsMu.Unlock()
 
+	s.requestMu.Lock()
 	if s.activeRequest != nil && s.activeRequest.ID == permission.ID {
 		s.activeRequest = nil
 	}
+	s.requestMu.Unlock()
 }
 
 func (s *permissionService) Grant(permission PermissionRequest) {
@@ -101,9 +103,11 @@ func (s *permissionService) Grant(permission PermissionRequest) {
 		respCh <- true
 	}
 
+	s.requestMu.Lock()
 	if s.activeRequest != nil && s.activeRequest.ID == permission.ID {
 		s.activeRequest = nil
 	}
+	s.requestMu.Unlock()
 }
 
 func (s *permissionService) Deny(permission PermissionRequest) {
@@ -117,9 +121,11 @@ func (s *permissionService) Deny(permission PermissionRequest) {
 		respCh <- false
 	}
 
+	s.requestMu.Lock()
 	if s.activeRequest != nil && s.activeRequest.ID == permission.ID {
 		s.activeRequest = nil
 	}
+	s.requestMu.Unlock()
 }
 
 func (s *permissionService) Request(opts CreatePermissionRequest) bool {
@@ -131,12 +137,14 @@ func (s *permissionService) Request(opts CreatePermissionRequest) bool {
 	s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 		ToolCallID: opts.ToolCallID,
 	})
+
+	// Acquire request mutex to serialize request processing
 	s.requestMu.Lock()
-	defer s.requestMu.Unlock()
 
 	// Check if the tool/action combination is in the allowlist
 	commandKey := opts.ToolName + ":" + opts.Action
 	if slices.Contains(s.allowedTools, commandKey) || slices.Contains(s.allowedTools, opts.ToolName) {
+		s.requestMu.Unlock()
 		return true
 	}
 
@@ -145,6 +153,7 @@ func (s *permissionService) Request(opts CreatePermissionRequest) bool {
 	s.autoApproveSessionsMu.RUnlock()
 
 	if autoApprove {
+		s.requestMu.Unlock()
 		return true
 	}
 
@@ -176,6 +185,7 @@ func (s *permissionService) Request(opts CreatePermissionRequest) bool {
 	for _, p := range s.sessionPermissions {
 		if p.ToolName == permission.ToolName && p.Action == permission.Action && p.SessionID == permission.SessionID && p.Path == permission.Path {
 			s.sessionPermissionsMu.RUnlock()
+			s.requestMu.Unlock()
 			return true
 		}
 	}
@@ -185,6 +195,7 @@ func (s *permissionService) Request(opts CreatePermissionRequest) bool {
 	for _, p := range s.sessionPermissions {
 		if p.ToolName == permission.ToolName && p.Action == permission.Action && p.SessionID == permission.SessionID && p.Path == permission.Path {
 			s.sessionPermissionsMu.RUnlock()
+			s.requestMu.Unlock()
 			return true
 		}
 	}
@@ -194,12 +205,16 @@ func (s *permissionService) Request(opts CreatePermissionRequest) bool {
 
 	respCh := make(chan bool, 1)
 	s.pendingRequests.Set(permission.ID, respCh)
-	defer s.pendingRequests.Del(permission.ID)
 
 	// Publish the request
 	s.Publish(pubsub.CreatedEvent, permission)
 
-	return <-respCh
+	// Release the mutex before waiting - Grant/Deny will be called from another goroutine
+	s.requestMu.Unlock()
+
+	result := <-respCh
+	s.pendingRequests.Del(permission.ID)
+	return result
 }
 
 func (s *permissionService) AutoApproveSession(sessionID string) {

@@ -185,7 +185,6 @@ func TestPermissionService_SequentialProperties(t *testing.T) {
 		events := service.Subscribe(t.Context())
 
 		var wg sync.WaitGroup
-		results := make([]bool, 0)
 
 		requests := []CreatePermissionRequest{
 			{
@@ -211,11 +210,15 @@ func TestPermissionService_SequentialProperties(t *testing.T) {
 			},
 		}
 
+		// Pre-allocate results slice to avoid race on append
+		results := make([]bool, len(requests))
+
 		for i, req := range requests {
 			wg.Add(1)
 			go func(index int, request CreatePermissionRequest) {
 				defer wg.Done()
-				results = append(results, service.Request(request))
+				// Write to specific index (safe - each goroutine writes to different index)
+				results[index] = service.Request(request)
 			}(i, req)
 		}
 
