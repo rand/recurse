@@ -664,7 +664,7 @@ func TestSelectMode_ClassificationBased(t *testing.T) {
 			classification := w.classifier.Classify(tt.query, contexts)
 
 			// Select mode
-			mode, reason := w.selectMode(tt.query, tt.tokens, contexts, &classification)
+			mode, reason, _ := w.selectMode(context.Background(), tt.query, tt.tokens, contexts, &classification)
 
 			assert.Equal(t, tt.wantMode, mode, "mode mismatch for: %s", tt.query)
 			assert.Contains(t, reason, tt.wantContains, "reason should contain '%s', got: %s", tt.wantContains, reason)
@@ -691,11 +691,11 @@ func TestSelectMode_NoClassifier(t *testing.T) {
 	contexts := []ContextSource{{Type: ContextTypeFile, Content: "test"}}
 
 	// Without classifier, should fall back to size-based selection
-	mode, reason := w.selectMode("How many errors?", 5000, contexts, nil)
+	mode, reason, _ := w.selectMode(context.Background(), "How many errors?", 5000, contexts, nil)
 	assert.Equal(t, ModeRLM, mode)
 	assert.Contains(t, reason, "context size")
 
-	mode, reason = w.selectMode("How many errors?", 1000, contexts, nil)
+	mode, reason, _ = w.selectMode(context.Background(), "How many errors?", 1000, contexts, nil)
 	assert.Equal(t, ModeDirecte, mode)
 	assert.Contains(t, reason, "context size")
 }
@@ -735,7 +735,7 @@ func TestSelectMode_NoREPL(t *testing.T) {
 	contexts := []ContextSource{{Type: ContextTypeFile, Content: "test"}}
 	classification := Classification{Type: TaskTypeComputational, Confidence: 0.9}
 
-	mode, reason := w.selectMode("Count words", 10000, contexts, &classification)
+	mode, reason, _ := w.selectMode(context.Background(), "Count words", 10000, contexts, &classification)
 	assert.Equal(t, ModeDirecte, mode)
 	assert.Contains(t, reason, "REPL not available")
 }
