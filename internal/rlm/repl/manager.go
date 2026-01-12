@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -194,7 +195,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Capture baseline resource usage after startup
 	if err := m.resourceMonitor.CaptureBaseline(); err != nil {
 		// Non-fatal, just log
-		// TODO: Add proper logging
+		slog.Debug("failed to capture baseline resource usage", "error", err)
 	}
 
 	return nil

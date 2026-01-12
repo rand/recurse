@@ -967,6 +967,11 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 		}
 		session = newSession
 		cmds = append(cmds, util.CmdHandler(chat.SessionSelectedMsg(session)))
+
+		// Set session ID for RLM checkpoint tracking
+		if p.app.RLM != nil {
+			p.app.RLM.SetSessionID(session.ID)
+		}
 	}
 	if p.app.AgentCoordinator == nil {
 		return util.ReportError(fmt.Errorf("coder agent is not initialized"))

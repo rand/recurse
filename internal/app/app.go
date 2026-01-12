@@ -236,6 +236,11 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt 
 	}
 	slog.Info("Created session for non-interactive run", "session_id", sess.ID)
 
+	// Set session ID for RLM checkpoint tracking
+	if app.RLM != nil {
+		app.RLM.SetSessionID(sess.ID)
+	}
+
 	// Automatically approve all permission requests for this non-interactive
 	// session.
 	app.Permissions.AutoApproveSession(sess.ID)

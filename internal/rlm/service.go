@@ -266,7 +266,20 @@ func (s *Service) Execute(ctx context.Context, task string) (*ExecutionResult, e
 		s.mu.Unlock()
 		return nil, fmt.Errorf("service not running")
 	}
+	execNum := s.stats.TotalExecutions + 1
 	s.mu.Unlock()
+
+	// Update checkpoint before execution
+	if s.checkpoint != nil {
+		replActive := s.orchestrator != nil && s.orchestrator.HasREPL()
+		s.checkpoint.UpdateRLMState(&checkpoint.RLMState{
+			CurrentIteration: execNum,
+			MaxIterations:    s.config.Controller.MaxRecursionDepth,
+			LastTask:         task,
+			REPLActive:       replActive,
+			Mode:             "rlm",
+		})
+	}
 
 	result, err := s.controller.Execute(ctx, task)
 
@@ -279,7 +292,20 @@ func (s *Service) Execute(ctx context.Context, task string) (*ExecutionResult, e
 	if err != nil {
 		s.stats.Errors++
 	}
+	stats := s.stats
 	s.mu.Unlock()
+
+	// Update checkpoint after execution with current stats
+	if s.checkpoint != nil {
+		s.checkpoint.UpdateServiceStats(&checkpoint.ServiceStats{
+			TotalExecutions: stats.TotalExecutions,
+			TotalTokens:     stats.TotalTokens,
+			TotalDuration:   stats.TotalDuration,
+			TasksCompleted:  stats.TasksCompleted,
+			SessionsEnded:   stats.SessionsEnded,
+			Errors:          stats.Errors,
+		})
+	}
 
 	return result, err
 }

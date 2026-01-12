@@ -579,6 +579,11 @@ func (o *Orchestrator) SetEnabled(enabled bool) {
 	o.enabled = enabled
 }
 
+// HasREPL returns whether a REPL manager is available.
+func (o *Orchestrator) HasREPL() bool {
+	return o.replMgr != nil
+}
+
 // Helper functions
 
 func containsAny(s string, substrs []string) bool {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -376,4 +377,225 @@ func TestManager_Clear_NoFile(t *testing.T) {
 	// Clear when no file exists should not error
 	err := mgr.Clear()
 	require.NoError(t, err)
+}
+
+// Property-based tests
+
+// TestProperty_SaveLoadRoundtrip verifies save/load preserves checkpoint data.
+func TestProperty_SaveLoadRoundtrip(t *testing.T) {
+	// Use a single temp dir for all tests in this property
+	baseDir := t.TempDir()
+
+	rapid.Check(t, func(t *rapid.T) {
+		// Use alphanumeric for valid directory names
+		dirName := rapid.StringMatching(`[a-zA-Z0-9]{1,20}`).Draw(t, "dir")
+		testDir := filepath.Join(baseDir, dirName)
+		os.MkdirAll(testDir, 0o755)
+		defer os.RemoveAll(testDir)
+
+		cfg := Config{
+			Enabled: true,
+			Path:    testDir,
+			MaxAge:  24 * time.Hour,
+		}
+
+		mgr := NewManager(cfg)
+
+		// Generate random checkpoint data
+		sessionID := rapid.String().Draw(t, "session_id")
+		nodeCount := rapid.IntRange(0, 10000).Draw(t, "node_count")
+		factCount := rapid.IntRange(0, nodeCount).Draw(t, "fact_count")
+		entityCount := rapid.IntRange(0, nodeCount-factCount).Draw(t, "entity_count")
+		currentIter := rapid.IntRange(0, 100).Draw(t, "current_iter")
+		maxIter := rapid.IntRange(currentIter, 100).Draw(t, "max_iter")
+		lastTask := rapid.String().Draw(t, "last_task")
+		replActive := rapid.Bool().Draw(t, "repl_active")
+		mode := rapid.SampledFrom([]string{"rlm", "direct", ""}).Draw(t, "mode")
+		totalExec := rapid.IntRange(0, 10000).Draw(t, "total_exec")
+
+		mgr.SetSessionID(sessionID)
+		mgr.UpdateTaskState(&TaskState{
+			NodeCount:   nodeCount,
+			FactCount:   factCount,
+			EntityCount: entityCount,
+		})
+		mgr.UpdateRLMState(&RLMState{
+			CurrentIteration: currentIter,
+			MaxIterations:    maxIter,
+			LastTask:         lastTask,
+			REPLActive:       replActive,
+			Mode:             mode,
+		})
+		mgr.UpdateServiceStats(&ServiceStats{
+			TotalExecutions: totalExec,
+		})
+
+		err := mgr.Save()
+		if err != nil {
+			t.Fatalf("save failed: %v", err)
+		}
+
+		// Load in new manager
+		mgr2 := NewManager(cfg)
+		cp, err := mgr2.Load()
+		if err != nil {
+			t.Fatalf("load failed: %v", err)
+		}
+		if cp == nil {
+			t.Fatal("checkpoint should not be nil after save")
+		}
+
+		// Verify data preserved
+		assert.Equal(t, sessionID, cp.SessionID)
+		assert.Equal(t, nodeCount, cp.TaskState.NodeCount)
+		assert.Equal(t, factCount, cp.TaskState.FactCount)
+		assert.Equal(t, entityCount, cp.TaskState.EntityCount)
+		assert.Equal(t, currentIter, cp.RLMState.CurrentIteration)
+		assert.Equal(t, maxIter, cp.RLMState.MaxIterations)
+		assert.Equal(t, lastTask, cp.RLMState.LastTask)
+		assert.Equal(t, replActive, cp.RLMState.REPLActive)
+		assert.Equal(t, mode, cp.RLMState.Mode)
+		assert.Equal(t, totalExec, cp.ServiceStats.TotalExecutions)
+	})
+}
+
+// TestProperty_SummaryNeverPanics verifies Summary never panics on any checkpoint.
+func TestProperty_SummaryNeverPanics(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate random checkpoint (including nil fields)
+		var cp *Checkpoint
+		if rapid.Bool().Draw(t, "nil_checkpoint") {
+			cp = nil
+		} else {
+			cp = &Checkpoint{
+				Version:   rapid.IntRange(0, 10).Draw(t, "version"),
+				SessionID: rapid.String().Draw(t, "session_id"),
+				CreatedAt: time.Now().Add(-time.Duration(rapid.IntRange(0, 86400).Draw(t, "age_seconds")) * time.Second),
+			}
+
+			if rapid.Bool().Draw(t, "has_task_state") {
+				cp.TaskState = &TaskState{
+					NodeCount:   rapid.IntRange(0, 10000).Draw(t, "node_count"),
+					FactCount:   rapid.IntRange(0, 1000).Draw(t, "fact_count"),
+					EntityCount: rapid.IntRange(0, 1000).Draw(t, "entity_count"),
+				}
+			}
+
+			if rapid.Bool().Draw(t, "has_rlm_state") {
+				cp.RLMState = &RLMState{
+					CurrentIteration: rapid.IntRange(0, 100).Draw(t, "current_iter"),
+					MaxIterations:    rapid.IntRange(0, 100).Draw(t, "max_iter"),
+					LastTask:         rapid.String().Draw(t, "last_task"),
+					REPLActive:       rapid.Bool().Draw(t, "repl_active"),
+					Mode:             rapid.String().Draw(t, "mode"),
+				}
+			}
+
+			if rapid.Bool().Draw(t, "has_stats") {
+				cp.ServiceStats = &ServiceStats{
+					TotalExecutions: rapid.IntRange(0, 10000).Draw(t, "total_exec"),
+					TotalTokens:     rapid.IntRange(0, 1000000).Draw(t, "total_tokens"),
+				}
+			}
+		}
+
+		// Should never panic
+		summary := cp.Summary()
+		assert.NotEmpty(t, summary, "Summary should never be empty")
+	})
+}
+
+// TestProperty_IsRecoverableConsistent verifies IsRecoverable is consistent with state.
+func TestProperty_IsRecoverableConsistent(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		cp := &Checkpoint{
+			Version:   1,
+			SessionID: rapid.String().Draw(t, "session_id"),
+		}
+
+		nodeCount := rapid.IntRange(0, 100).Draw(t, "node_count")
+		lastTask := rapid.String().Draw(t, "last_task")
+
+		if rapid.Bool().Draw(t, "has_task_state") {
+			cp.TaskState = &TaskState{NodeCount: nodeCount}
+		}
+
+		if rapid.Bool().Draw(t, "has_rlm_state") {
+			cp.RLMState = &RLMState{LastTask: lastTask}
+		}
+
+		// Verify consistency
+		isRecoverable := cp.IsRecoverable()
+
+		hasNodes := cp.TaskState != nil && cp.TaskState.NodeCount > 0
+		hasTask := cp.RLMState != nil && cp.RLMState.LastTask != ""
+
+		expectedRecoverable := hasNodes || hasTask
+		assert.Equal(t, expectedRecoverable, isRecoverable,
+			"IsRecoverable should match actual state (nodes=%d, task=%q)", nodeCount, lastTask)
+	})
+}
+
+// TestProperty_UpdateMethodsNeverPanic verifies update methods never panic.
+func TestProperty_UpdateMethodsNeverPanic(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		cfg := DefaultConfig()
+		mgr := NewManager(cfg)
+
+		// Should never panic with any input
+		mgr.SetSessionID(rapid.String().Draw(t, "session_id"))
+
+		mgr.UpdateTaskState(&TaskState{
+			TaskID:      rapid.String().Draw(t, "task_id"),
+			NodeCount:   rapid.IntRange(-100, 10000).Draw(t, "node_count"),
+			FactCount:   rapid.IntRange(-100, 1000).Draw(t, "fact_count"),
+			EntityCount: rapid.IntRange(-100, 1000).Draw(t, "entity_count"),
+		})
+
+		mgr.UpdateRLMState(&RLMState{
+			CurrentIteration: rapid.IntRange(-100, 1000).Draw(t, "current_iter"),
+			MaxIterations:    rapid.IntRange(-100, 1000).Draw(t, "max_iter"),
+			LastTask:         rapid.String().Draw(t, "last_task"),
+			REPLActive:       rapid.Bool().Draw(t, "repl_active"),
+			Mode:             rapid.String().Draw(t, "mode"),
+		})
+
+		mgr.UpdateServiceStats(&ServiceStats{
+			TotalExecutions: rapid.IntRange(-100, 10000).Draw(t, "total_exec"),
+			TotalTokens:     rapid.IntRange(-100, 1000000).Draw(t, "total_tokens"),
+			Errors:          rapid.IntRange(-100, 1000).Draw(t, "errors"),
+		})
+	})
+}
+
+// TestProperty_ConcurrentUpdatesSafe verifies concurrent updates are safe.
+func TestProperty_ConcurrentUpdatesSafe(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		cfg := DefaultConfig()
+		mgr := NewManager(cfg)
+
+		numGoroutines := rapid.IntRange(2, 10).Draw(t, "num_goroutines")
+		numUpdates := rapid.IntRange(1, 20).Draw(t, "num_updates")
+
+		done := make(chan bool, numGoroutines)
+
+		for i := 0; i < numGoroutines; i++ {
+			go func(id int) {
+				for j := 0; j < numUpdates; j++ {
+					mgr.SetSessionID("session-" + string(rune(id+'0')))
+					mgr.UpdateTaskState(&TaskState{NodeCount: id*100 + j})
+					mgr.UpdateRLMState(&RLMState{CurrentIteration: j})
+					mgr.UpdateServiceStats(&ServiceStats{TotalExecutions: id*1000 + j})
+				}
+				done <- true
+			}(i)
+		}
+
+		// Wait for all goroutines
+		for i := 0; i < numGoroutines; i++ {
+			<-done
+		}
+
+		// Should complete without race conditions or panics
+	})
 }
