@@ -122,8 +122,16 @@ RUN_REAL_BENCHMARK=1 go test -v -run TestRealBenchmark_RLMvsDirectEvaluation ./i
 | Pattern extraction | RLM | Code-based processing |
 | Simple Q&A | Direct | Lower latency |
 
+## Current Implementation
+
+**Automatic mode selection** is already implemented based on context size:
+- Context < 4K tokens → Direct mode
+- Context >= 4K tokens → RLM mode (if REPL available)
+
+See `internal/rlm/wrapper.go:shouldUseRLMMode()` for the selection logic.
+
 ## Future Work
 
-1. **Hybrid Mode**: Auto-select RLM vs Direct based on task classification
+1. **Task-Type Detection**: Classify tasks (computational vs retrieval) to influence mode, not just context size
 2. **RLM Speed**: Reduce iteration count and callback latency
-3. **Task Detection**: Heuristics to identify computational vs retrieval tasks
+3. **Forced Mode Override**: Allow forcing RLM for small contexts when computation is needed
