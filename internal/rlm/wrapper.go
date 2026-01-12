@@ -154,18 +154,54 @@ func (w *Wrapper) PrepareContextWithOptions(ctx context.Context, prompt string, 
 	// Check for mode override
 	var mode ExecutionMode
 	var reason string
+	var selectionResult modeSelectionResult
 
 	switch opts.ModeOverride {
 	case ModeOverrideRLM:
 		mode = ModeRLM
 		reason = "mode override: forced RLM"
+		selectionResult = modeSelectionResult{
+			mode:           mode,
+			reason:         reason,
+			classification: classification,
+			thresholdUsed:  w.minContextTokensForRLM,
+		}
+		slog.Debug("Mode selection: user override (RLM)",
+			"total_tokens", totalTokens,
+			"context_count", len(contexts))
 	case ModeOverrideDirect:
 		mode = ModeDirecte
 		reason = "mode override: forced Direct"
+		selectionResult = modeSelectionResult{
+			mode:           mode,
+			reason:         reason,
+			classification: classification,
+			thresholdUsed:  w.minContextTokensForRLM,
+		}
+		slog.Debug("Mode selection: user override (Direct)",
+			"total_tokens", totalTokens,
+			"context_count", len(contexts))
 	default:
 		// Auto mode: use automatic selection (may update classification via LLM fallback)
-		mode, reason, classification = w.selectMode(ctx, prompt, totalTokens, contexts, classification)
+		selectionResult = w.selectModeDetailed(ctx, prompt, totalTokens, contexts, classification)
+		mode = selectionResult.mode
+		reason = selectionResult.reason
+		classification = selectionResult.classification
 	}
+
+	// Build mode selection info for transparency
+	modeInfo := buildModeSelectionInfo(
+		mode,
+		reason,
+		opts.ModeOverride,
+		classification,
+		totalTokens,
+		len(contexts),
+		selectionResult.thresholdUsed,
+		w.replMgr != nil,
+		selectionResult.usedLLMFallback,
+		selectionResult.ruleBasedConfidence,
+	)
 
 	// Check if RLM is actually possible when forced
 	if mode == ModeRLM {
@@ -175,12 +211,16 @@ func (w *Wrapper) PrepareContextWithOptions(ctx context.Context, prompt string, 
 			}
 			mode = ModeDirecte
 			reason = "RLM not available, falling back to Direct"
+			modeInfo.SelectedMode = mode
+			modeInfo.Reason = reason
 		} else if w.replMgr == nil {
 			if opts.ModeOverride == ModeOverrideRLM {
 				return nil, fmt.Errorf("RLM mode requested but REPL not available")
 			}
 			mode = ModeDirecte
 			reason = "REPL not available, falling back to Direct"
+			modeInfo.SelectedMode = mode
+			modeInfo.Reason = reason
 		}
 	}
 
@@ -190,6 +230,7 @@ func (w *Wrapper) PrepareContextWithOptions(ctx context.Context, prompt string, 
 			return nil, err
 		}
 		prepared.ModeReason = reason
+		prepared.ModeInfo = modeInfo
 		return prepared, nil
 	}
 
@@ -197,6 +238,7 @@ func (w *Wrapper) PrepareContextWithOptions(ctx context.Context, prompt string, 
 	prepared := w.prepareDirectMode(prompt, contexts)
 	prepared.Classification = classification
 	prepared.ModeReason = reason
+	prepared.ModeInfo = modeInfo
 	return prepared, nil
 }
 
@@ -219,6 +261,9 @@ type PreparedPrompt struct {
 
 	// Classification contains the task classification result (if classifier enabled).
 	Classification *Classification
+
+	// ModeInfo contains detailed mode selection information for transparency.
+	ModeInfo *ModeSelectionInfo
 
 	// LoadedContext contains info about externalized context (RLM mode only).
 	LoadedContext *LoadedContext
@@ -259,21 +304,70 @@ type PrepareOptions struct {
 	SkipClassification bool
 }
 
+// modeSelectionResult contains the full result of mode selection for transparency.
+type modeSelectionResult struct {
+	mode                ExecutionMode
+	reason              string
+	classification      *Classification
+	usedLLMFallback     bool
+	ruleBasedConfidence float64
+	thresholdUsed       int
+}
+
 // selectMode determines which execution mode to use based on task classification and context size.
 // Returns the selected mode, a human-readable reason, and potentially an updated classification.
 func (w *Wrapper) selectMode(ctx context.Context, query string, totalTokens int, contexts []ContextSource, classification *Classification) (ExecutionMode, string, *Classification) {
+	result := w.selectModeDetailed(ctx, query, totalTokens, contexts, classification)
+	return result.mode, result.reason, result.classification
+}
+
+// selectModeDetailed performs mode selection with full detail tracking for transparency.
+func (w *Wrapper) selectModeDetailed(ctx context.Context, query string, totalTokens int, contexts []ContextSource, classification *Classification) modeSelectionResult {
+	result := modeSelectionResult{
+		classification:      classification,
+		thresholdUsed:       w.minContextTokensForRLM,
+		ruleBasedConfidence: 0,
+	}
+
+	if classification != nil {
+		result.ruleBasedConfidence = classification.Confidence
+	}
+
 	// Basic prerequisites for RLM
 	if len(contexts) == 0 {
-		return ModeDirecte, "no context to externalize", classification
+		result.mode = ModeDirecte
+		result.reason = "no context to externalize"
+		slog.Debug("Mode selection: Direct (no context)",
+			"total_tokens", totalTokens)
+		return result
 	}
 	if w.replMgr == nil {
-		return ModeDirecte, "REPL not available", classification
+		result.mode = ModeDirecte
+		result.reason = "REPL not available"
+		slog.Debug("Mode selection: Direct (REPL unavailable)",
+			"total_tokens", totalTokens)
+		return result
 	}
 
 	// Use classification if available and confident
 	if classification != nil && classification.Confidence >= w.classificationConfidenceThreshold {
 		mode, reason := w.selectModeFromClassification(classification, totalTokens)
-		return mode, reason, classification
+		result.mode = mode
+		result.reason = reason
+
+		// Adjust threshold for computational tasks
+		if classification.Type == TaskTypeComputational {
+			result.thresholdUsed = w.minContextTokensForComputational
+		}
+
+		slog.Debug("Mode selection: classification-based",
+			"mode", mode,
+			"task_type", classification.Type,
+			"confidence", classification.Confidence,
+			"signals", classification.Signals,
+			"total_tokens", totalTokens,
+			"reason", reason)
+		return result
 	}
 
 	// Try LLM fallback for uncertain classifications (confidence between min and threshold)
@@ -283,9 +377,10 @@ func (w *Wrapper) selectMode(ctx context.Context, query string, totalTokens int,
 		w.llmClassifier != nil {
 
 		slog.Debug("Attempting LLM classification fallback",
-			"query", query,
+			"query", truncate(query, 100),
 			"rule_confidence", classification.Confidence,
-			"rule_type", classification.Type)
+			"rule_type", classification.Type,
+			"signals", classification.Signals)
 
 		llmClassification, err := w.llmClassifier.Classify(ctx, query, classification)
 		if err != nil {
@@ -293,23 +388,52 @@ func (w *Wrapper) selectMode(ctx context.Context, query string, totalTokens int,
 			// Continue to size-based fallback
 		} else if llmClassification.Confidence >= w.classificationConfidenceThreshold {
 			// LLM provided confident classification
-			slog.Debug("LLM classification successful",
-				"type", llmClassification.Type,
-				"confidence", llmClassification.Confidence)
+			result.usedLLMFallback = true
+			result.classification = &llmClassification
 
 			mode, reason := w.selectModeFromClassification(&llmClassification, totalTokens)
-			return mode, reason + " (via LLM fallback)", &llmClassification
+			result.mode = mode
+			result.reason = reason + " (via LLM fallback)"
+
+			if llmClassification.Type == TaskTypeComputational {
+				result.thresholdUsed = w.minContextTokensForComputational
+			}
+
+			slog.Debug("Mode selection: LLM fallback successful",
+				"mode", mode,
+				"task_type", llmClassification.Type,
+				"llm_confidence", llmClassification.Confidence,
+				"rule_confidence", classification.Confidence,
+				"total_tokens", totalTokens,
+				"reason", result.reason)
+			return result
 		}
 	}
 
 	// Fall back to size-based selection
 	if totalTokens >= w.minContextTokensForRLM {
-		return ModeRLM, fmt.Sprintf("context size (%d tokens) >= threshold (%d)",
-			totalTokens, w.minContextTokensForRLM), classification
+		result.mode = ModeRLM
+		result.reason = fmt.Sprintf("context size (%d tokens) >= threshold (%d)",
+			totalTokens, w.minContextTokensForRLM)
+
+		slog.Debug("Mode selection: size-based (RLM)",
+			"mode", "rlm",
+			"total_tokens", totalTokens,
+			"threshold", w.minContextTokensForRLM,
+			"classification_confidence", result.ruleBasedConfidence)
+		return result
 	}
 
-	return ModeDirecte, fmt.Sprintf("context size (%d tokens) < threshold (%d)",
-		totalTokens, w.minContextTokensForRLM), classification
+	result.mode = ModeDirecte
+	result.reason = fmt.Sprintf("context size (%d tokens) < threshold (%d)",
+		totalTokens, w.minContextTokensForRLM)
+
+	slog.Debug("Mode selection: size-based (Direct)",
+		"mode", "direct",
+		"total_tokens", totalTokens,
+		"threshold", w.minContextTokensForRLM,
+		"classification_confidence", result.ruleBasedConfidence)
+	return result
 }
 
 // selectModeFromClassification picks mode based on a confident classification.
