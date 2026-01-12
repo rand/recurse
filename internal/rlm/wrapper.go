@@ -519,6 +519,11 @@ type RLMConfig struct {
 	// When enabled, the loop may terminate before MaxIterations if the
 	// answer is clearly determined (e.g., answer stability, simple task completion).
 	EnableEarlyTermination bool
+
+	// OnProgress is called for each progress event during execution.
+	// Use this for streaming progress updates to the UI.
+	// The callback should be fast and non-blocking.
+	OnProgress ProgressCallback
 }
 
 // DefaultRLMConfig returns sensible defaults for RLM execution.
@@ -579,6 +584,9 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 		termTracker = NewTerminationTracker(taskType)
 	}
 
+	// Initialize progress emitter if callback provided
+	progress := NewProgressEmitter(cfg.OnProgress, cfg.MaxIterations)
+
 	// Clear any previous FINAL output
 	if _, err := w.replMgr.Execute(ctx, "clear_final_output()"); err != nil {
 		slog.Warn("Failed to clear FINAL output", "error", err)
@@ -593,6 +601,9 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 	// Main execution loop
 	for iteration := 0; iteration < cfg.MaxIterations; iteration++ {
 		result.Iterations = iteration + 1
+
+		// Emit iteration start
+		progress.EmitIterationStart(iteration + 1)
 
 		// Start iteration profiling
 		var iterProfile *IterationProfile
@@ -611,13 +622,16 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 
 		// Send conversation to LLM (timed)
 		prompt := w.formatConversation(conversation)
+		progress.EmitLLMStart(iteration + 1)
 		llmStart := time.Now()
 		response, err := w.client.Complete(ctx, prompt, cfg.MaxTokensPerCall)
+		llmDur := time.Since(llmStart)
 		if iterProfile != nil {
-			iterProfile.LLMCallDur = time.Since(llmStart)
+			iterProfile.LLMCallDur = llmDur
 		}
 		if err != nil {
 			result.Error = fmt.Sprintf("LLM call failed: %v", err)
+			progress.EmitError(iteration+1, err.Error())
 			if iterProfile != nil {
 				profile.EndIteration(iterProfile)
 			}
@@ -639,6 +653,9 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 		if iterProfile != nil {
 			iterProfile.ParseDur = time.Since(parseStart)
 		}
+
+		// Emit LLM end with code detection
+		progress.EmitLLMEnd(iteration+1, llmDur, promptTokens+completionTokens, code != "")
 
 		if code == "" {
 			// No code found - LLM might have provided a direct answer
@@ -670,10 +687,12 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 		}
 
 		// Execute the code in REPL (timed)
+		progress.EmitREPLStart(iteration+1, code)
 		replStart := time.Now()
 		execResult, err := w.replMgr.Execute(ctx, code)
+		replDur := time.Since(replStart)
 		if iterProfile != nil {
-			iterProfile.REPLExecDur = time.Since(replStart)
+			iterProfile.REPLExecDur = replDur
 			if execResult != nil {
 				iterProfile.REPLOutputLen = len(execResult.Output)
 				if execResult.Error != "" {
@@ -683,11 +702,19 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 		}
 		if err != nil {
 			result.Error = fmt.Sprintf("REPL execution failed: %v", err)
+			progress.EmitError(iteration+1, err.Error())
 			if iterProfile != nil {
 				profile.EndIteration(iterProfile)
 			}
 			break
 		}
+
+		// Emit REPL end
+		replErr := ""
+		if execResult != nil {
+			replErr = execResult.Error
+		}
+		progress.EmitREPLEnd(iteration+1, replDur, execResult.Output, replErr)
 
 		// Check if FINAL() was called
 		hasFinal, err := w.HasFinalOutput(ctx)
@@ -700,6 +727,7 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 			finalOutput, err := w.GetFinalOutputWithMetadata(ctx)
 			if err != nil {
 				result.Error = fmt.Sprintf("failed to get FINAL output: %v", err)
+				progress.EmitError(iteration+1, err.Error())
 				if iterProfile != nil {
 					profile.EndIteration(iterProfile)
 				}
@@ -709,6 +737,7 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 				result.FinalOutput = finalOutput.Content
 				result.FinalType = finalOutput.Type
 				result.FinalMetadata = finalOutput.Metadata
+				progress.EmitFinal(iteration+1, finalOutput.Content)
 			}
 			if iterProfile != nil {
 				iterProfile.HasFinal = true
@@ -761,9 +790,14 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 		)
 
 		// End iteration profiling
+		var iterDur time.Duration
 		if iterProfile != nil {
+			iterDur = time.Since(iterProfile.StartTime)
 			profile.EndIteration(iterProfile)
 		}
+
+		// Emit iteration end
+		progress.EmitIterationEnd(iteration+1, iterDur, true)
 
 		slog.Debug("RLM iteration",
 			"iteration", iteration+1,
@@ -784,6 +818,9 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 	if result.FinalOutput == "" && result.Error == "" && result.Iterations >= cfg.MaxIterations {
 		result.Error = fmt.Sprintf("max iterations (%d) reached without FINAL() call", cfg.MaxIterations)
 	}
+
+	// Emit completion
+	progress.EmitComplete(result.Iterations, result.Duration, result.FinalOutput, result.EarlyTerminated, result.TerminationReason)
 
 	return result, nil
 }
