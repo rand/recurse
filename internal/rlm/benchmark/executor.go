@@ -129,22 +129,10 @@ func buildDirectPrompt(task Task) string {
 }
 
 // extractAnswer extracts the answer from a model response.
+// It returns the full response (trimmed) since answers may span multiple lines.
+// The scorer handles the actual matching logic.
 func extractAnswer(response string) string {
-	response = strings.TrimSpace(response)
-
-	// Try to extract just the answer if there's extra text
-	lines := strings.Split(response, "\n")
-	if len(lines) > 0 {
-		// Return first non-empty line
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				return line
-			}
-		}
-	}
-
-	return response
+	return strings.TrimSpace(response)
 }
 
 // estimateTokens provides a rough token count estimate.
