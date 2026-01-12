@@ -23,7 +23,11 @@ CREATE TABLE IF NOT EXISTS nodes (
 -- Hyperedges connect multiple nodes with semantic relationships
 CREATE TABLE IF NOT EXISTS hyperedges (
     id TEXT PRIMARY KEY,
-    type TEXT NOT NULL CHECK(type IN ('relation', 'composition', 'causation', 'context')),
+    type TEXT NOT NULL CHECK(type IN (
+        'relation', 'composition', 'causation', 'context',
+        -- Reasoning trace edge types (SPEC.md section 5.2)
+        'spawns', 'considers', 'chooses', 'rejects', 'implements', 'produces', 'informs'
+    )),
     label TEXT,  -- human-readable description
     weight REAL DEFAULT 1.0 CHECK(weight >= 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

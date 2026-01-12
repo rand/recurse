@@ -18,6 +18,15 @@ const (
 	HyperedgeComposition HyperedgeType = "composition" // Groups related facts into higher-order structure
 	HyperedgeCausation   HyperedgeType = "causation"   // Links decisions to outcomes
 	HyperedgeContext     HyperedgeType = "context"     // Associates snippets with semantic meaning
+
+	// Reasoning trace hyperedge types (SPEC.md section 5.2)
+	HyperedgeSpawns     HyperedgeType = "spawns"     // goal → decision
+	HyperedgeConsiders  HyperedgeType = "considers"  // decision → option
+	HyperedgeChooses    HyperedgeType = "chooses"    // decision → option (selected)
+	HyperedgeRejects    HyperedgeType = "rejects"    // decision → option (with reason)
+	HyperedgeImplements HyperedgeType = "implements" // decision → action
+	HyperedgeProduces   HyperedgeType = "produces"   // action → outcome (with diffs)
+	HyperedgeInforms    HyperedgeType = "informs"    // observation → decision
 )
 
 // MemberRole defines the role of a node in a hyperedge.
