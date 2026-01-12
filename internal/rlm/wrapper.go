@@ -424,6 +424,9 @@ type RLMConfig struct {
 
 	// Timeout is the maximum total execution time.
 	Timeout time.Duration
+
+	// EnableProfiling enables detailed performance profiling.
+	EnableProfiling bool
 }
 
 // DefaultRLMConfig returns sensible defaults for RLM execution.
@@ -467,6 +470,13 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 		StartTime: time.Now(),
 	}
 
+	// Initialize profiling if enabled
+	var profile *RLMProfile
+	if cfg.EnableProfiling {
+		profile = NewRLMProfile()
+		result.Profile = profile
+	}
+
 	// Clear any previous FINAL output
 	if _, err := w.replMgr.Execute(ctx, "clear_final_output()"); err != nil {
 		slog.Warn("Failed to clear FINAL output", "error", err)
@@ -482,30 +492,61 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 	for iteration := 0; iteration < cfg.MaxIterations; iteration++ {
 		result.Iterations = iteration + 1
 
+		// Start iteration profiling
+		var iterProfile *IterationProfile
+		if profile != nil {
+			iterProfile = profile.StartIteration(iteration + 1)
+		}
+
 		// Check context cancellation
 		if err := ctx.Err(); err != nil {
 			result.Error = fmt.Sprintf("context cancelled: %v", err)
+			if iterProfile != nil {
+				profile.EndIteration(iterProfile)
+			}
 			break
 		}
 
-		// Send conversation to LLM
+		// Send conversation to LLM (timed)
 		prompt := w.formatConversation(conversation)
+		llmStart := time.Now()
 		response, err := w.client.Complete(ctx, prompt, cfg.MaxTokensPerCall)
+		if iterProfile != nil {
+			iterProfile.LLMCallDur = time.Since(llmStart)
+		}
 		if err != nil {
 			result.Error = fmt.Sprintf("LLM call failed: %v", err)
+			if iterProfile != nil {
+				profile.EndIteration(iterProfile)
+			}
 			break
 		}
 
 		// Estimate tokens used
-		result.TotalTokens += estimateTokens(prompt) + estimateTokens(response)
+		promptTokens := estimateTokens(prompt)
+		completionTokens := estimateTokens(response)
+		result.TotalTokens += promptTokens + completionTokens
+		if iterProfile != nil {
+			iterProfile.PromptTokens = promptTokens
+			iterProfile.CompletionTokens = completionTokens
+		}
 
-		// Extract Python code from response
+		// Extract Python code from response (timed as parsing)
+		parseStart := time.Now()
 		code := extractPythonCode(response)
+		if iterProfile != nil {
+			iterProfile.ParseDur = time.Since(parseStart)
+		}
+
 		if code == "" {
 			// No code found - LLM might have provided a direct answer
 			// Check if this looks like a final answer
 			if looksLikeFinalAnswer(response) {
 				result.FinalOutput = response
+				if iterProfile != nil {
+					iterProfile.HasFinal = true
+					profile.EndIteration(iterProfile)
+				}
 				break
 			}
 
@@ -514,13 +555,35 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 				conversationMessage{Role: "assistant", Content: response},
 				conversationMessage{Role: "user", Content: "Please write Python code to solve this task. Use the available helper functions (peek, grep, partition, llm_call) to explore the context, and call FINAL() with your answer when done."},
 			)
+			if iterProfile != nil {
+				profile.EndIteration(iterProfile)
+			}
 			continue
 		}
 
-		// Execute the code in REPL
+		// Record code metrics
+		if iterProfile != nil {
+			iterProfile.HasCode = true
+			iterProfile.CodeLength = len(code)
+		}
+
+		// Execute the code in REPL (timed)
+		replStart := time.Now()
 		execResult, err := w.replMgr.Execute(ctx, code)
+		if iterProfile != nil {
+			iterProfile.REPLExecDur = time.Since(replStart)
+			if execResult != nil {
+				iterProfile.REPLOutputLen = len(execResult.Output)
+				if execResult.Error != "" {
+					iterProfile.REPLError = execResult.Error
+				}
+			}
+		}
 		if err != nil {
 			result.Error = fmt.Sprintf("REPL execution failed: %v", err)
+			if iterProfile != nil {
+				profile.EndIteration(iterProfile)
+			}
 			break
 		}
 
@@ -535,12 +598,19 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 			finalOutput, err := w.GetFinalOutputWithMetadata(ctx)
 			if err != nil {
 				result.Error = fmt.Sprintf("failed to get FINAL output: %v", err)
+				if iterProfile != nil {
+					profile.EndIteration(iterProfile)
+				}
 				break
 			}
 			if finalOutput != nil {
 				result.FinalOutput = finalOutput.Content
 				result.FinalType = finalOutput.Type
 				result.FinalMetadata = finalOutput.Metadata
+			}
+			if iterProfile != nil {
+				iterProfile.HasFinal = true
+				profile.EndIteration(iterProfile)
 			}
 			break
 		}
@@ -553,6 +623,11 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 			conversationMessage{Role: "user", Content: feedback},
 		)
 
+		// End iteration profiling
+		if iterProfile != nil {
+			profile.EndIteration(iterProfile)
+		}
+
 		slog.Debug("RLM iteration",
 			"iteration", iteration+1,
 			"has_output", execResult.Output != "",
@@ -561,6 +636,12 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 	}
 
 	result.Duration = time.Since(result.StartTime)
+
+	// Finalize profiling
+	if profile != nil {
+		profile.TotalDuration = result.Duration
+		profile.Finalize()
+	}
 
 	// If we exhausted iterations without FINAL, note it
 	if result.FinalOutput == "" && result.Error == "" && result.Iterations >= cfg.MaxIterations {
@@ -745,6 +826,9 @@ type RLMExecutionResult struct {
 
 	// Note contains any additional information.
 	Note string
+
+	// Profile contains detailed performance profiling data (if enabled).
+	Profile *RLMProfile
 }
 
 // FinalOutputResult contains the result from FINAL() including metadata.
