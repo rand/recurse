@@ -152,6 +152,36 @@ RLM (Recursive Language Model) mode externalizes context to a Python REPL for it
 
 See [docs/benchmark-results.md](docs/benchmark-results.md) for detailed analysis.
 
+## TUI and Debugging
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+P` | Open command palette |
+| `Ctrl+S` | Switch session |
+| `Ctrl+L` | Switch model |
+| `Ctrl+G` | Toggle help |
+| `Ctrl+N` | New session |
+
+### Inspecting RLM Behavior
+
+Open the RLM Trace view via `Ctrl+P` → "RLM Trace" to see:
+- Task decomposition events
+- Subtask execution status
+- Mode selection decisions
+- Result synthesis steps
+
+### Mode Selection Transparency
+
+The mode indicator shows whether RLM or Direct mode is active:
+- **RLM** (blue): Recursive decomposition with Python REPL
+- **DIRECT** (green): Standard LLM response
+
+Mode selection considers task classification (computational, analytical, retrieval), context size, and REPL availability. Override with `Ctrl+Shift+R` (force RLM) or `Ctrl+Shift+D` (force Direct).
+
+See [docs/user/memory-inspection.md](docs/user/memory-inspection.md) for the complete debugging guide.
+
 ## Development
 
 This project uses [beads](https://github.com/steveyegge/beads) for issue tracking.
