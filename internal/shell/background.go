@@ -29,9 +29,22 @@ type BackgroundShell struct {
 	cancel      context.CancelFunc
 	stdout      *bytes.Buffer
 	stderr      *bytes.Buffer
+	bufMu       sync.Mutex // protects stdout and stderr
 	done        chan struct{}
 	exitErr     error
 	completedAt int64 // Unix timestamp when job completed (0 if still running)
+}
+
+// syncWriter wraps a bytes.Buffer with a mutex for thread-safe writes.
+type syncWriter struct {
+	buf *bytes.Buffer
+	mu  *sync.Mutex
+}
+
+func (w *syncWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
 }
 
 // BackgroundShellManager manages background shell instances.
@@ -86,10 +99,14 @@ func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, b
 
 	m.shells.Set(id, bgShell)
 
+	// Create thread-safe writers that share the bgShell's mutex
+	stdoutWriter := &syncWriter{buf: bgShell.stdout, mu: &bgShell.bufMu}
+	stderrWriter := &syncWriter{buf: bgShell.stderr, mu: &bgShell.bufMu}
+
 	go func() {
 		defer close(bgShell.done)
 
-		err := shell.ExecStream(shellCtx, command, bgShell.stdout, bgShell.stderr)
+		err := shell.ExecStream(shellCtx, command, stdoutWriter, stderrWriter)
 
 		bgShell.exitErr = err
 		atomic.StoreInt64(&bgShell.completedAt, time.Now().Unix())
@@ -177,11 +194,16 @@ func (m *BackgroundShellManager) KillAll() {
 
 // GetOutput returns the current output of a background shell.
 func (bs *BackgroundShell) GetOutput() (stdout string, stderr string, done bool, err error) {
+	bs.bufMu.Lock()
+	stdoutStr := bs.stdout.String()
+	stderrStr := bs.stderr.String()
+	bs.bufMu.Unlock()
+
 	select {
 	case <-bs.done:
-		return bs.stdout.String(), bs.stderr.String(), true, bs.exitErr
+		return stdoutStr, stderrStr, true, bs.exitErr
 	default:
-		return bs.stdout.String(), bs.stderr.String(), false, nil
+		return stdoutStr, stderrStr, false, nil
 	}
 }
 

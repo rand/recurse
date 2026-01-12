@@ -1,6 +1,7 @@
 package csync
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -63,9 +64,13 @@ func TestVersionedMap_ConcurrentAccess(t *testing.T) {
 	// Initial version
 	initialVersion := vm.Version()
 
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
 	// Perform concurrent Set and Del operations
 	for i := range numGoroutines {
 		go func(id int) {
+			defer wg.Done()
 			for j := range numOperations {
 				key := id*numOperations + j
 				vm.Set(key, key*2)
@@ -74,14 +79,10 @@ func TestVersionedMap_ConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 
-	// Wait for operations to complete by checking the version
-	// This is a simplified check - in a real test you might want to use sync.WaitGroup
-	expectedMinVersion := initialVersion + uint64(numGoroutines*numOperations*2)
+	wg.Wait()
 
-	// Allow some time for operations to complete
-	for vm.Version() < expectedMinVersion {
-		// Busy wait - in a real test you'd use proper synchronization
-	}
+	// Each goroutine does numOperations * 2 version increments (Set + Del)
+	expectedMinVersion := initialVersion + uint64(numGoroutines*numOperations*2)
 
 	// Final version should be at least the expected minimum
 	require.GreaterOrEqual(t, vm.Version(), expectedMinVersion)

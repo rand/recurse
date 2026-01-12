@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/filepicker"
 	"charm.land/bubbles/v2/help"
@@ -97,7 +98,8 @@ type Theme struct {
 	AuthBorderUnselected lipgloss.Style
 	AuthTextUnselected   lipgloss.Style
 
-	styles *Styles
+	styles     *Styles
+	stylesOnce sync.Once
 }
 
 type Styles struct {
@@ -134,9 +136,9 @@ type Styles struct {
 }
 
 func (t *Theme) S() *Styles {
-	if t.styles == nil {
+	t.stylesOnce.Do(func() {
 		t.styles = t.buildStyles()
-	}
+	})
 	return t.styles
 }
 
@@ -500,24 +502,44 @@ type Manager struct {
 	current *Theme
 }
 
-var defaultManager *Manager
+var (
+	defaultManager   *Manager
+	defaultManagerMu sync.RWMutex
+	defaultInitOnce  sync.Once
+)
 
 func SetDefaultManager(m *Manager) {
+	defaultManagerMu.Lock()
 	defaultManager = m
+	defaultManagerMu.Unlock()
 }
 
 func DefaultManager() *Manager {
-	if defaultManager == nil {
-		defaultManager = NewManager()
+	defaultManagerMu.RLock()
+	if defaultManager != nil {
+		m := defaultManager
+		defaultManagerMu.RUnlock()
+		return m
 	}
-	return defaultManager
+	defaultManagerMu.RUnlock()
+
+	// Initialize if needed
+	defaultInitOnce.Do(func() {
+		defaultManagerMu.Lock()
+		if defaultManager == nil {
+			defaultManager = NewManager()
+		}
+		defaultManagerMu.Unlock()
+	})
+
+	defaultManagerMu.RLock()
+	m := defaultManager
+	defaultManagerMu.RUnlock()
+	return m
 }
 
 func CurrentTheme() *Theme {
-	if defaultManager == nil {
-		defaultManager = NewManager()
-	}
-	return defaultManager.Current()
+	return DefaultManager().Current()
 }
 
 func NewManager() *Manager {
