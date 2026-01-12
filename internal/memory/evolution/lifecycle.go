@@ -81,6 +81,9 @@ type LifecycleManager struct {
 	decayer      *Decayer
 	audit        *AuditLogger
 
+	// Meta-evolution manager (optional)
+	metaEvolution *MetaEvolutionManager
+
 	// Callbacks for lifecycle events
 	onTaskComplete  []func(*LifecycleResult)
 	onSessionEnd    []func(*LifecycleResult)
@@ -283,6 +286,13 @@ func (m *LifecycleManager) IdleMaintenance(ctx context.Context) (*LifecycleResul
 		}
 	}
 
+	// Step 4: Run meta-evolution analysis (if enabled)
+	if m.metaEvolution != nil {
+		if _, err := m.metaEvolution.RunAnalysis(ctx); err != nil {
+			result.Errors = append(result.Errors, fmt.Errorf("meta-evolution: %w", err))
+		}
+	}
+
 	result.Duration = time.Since(start)
 	result.Decay.Duration = result.Duration
 
@@ -402,4 +412,18 @@ func (m *LifecycleManager) ForceDecay(ctx context.Context) (*DecayResult, error)
 	result, err := m.decayer.ApplyDecay(ctx)
 	m.audit.LogDecay(result, err)
 	return result, err
+}
+
+// SetMetaEvolution attaches a meta-evolution manager to run during idle maintenance.
+func (m *LifecycleManager) SetMetaEvolution(meta *MetaEvolutionManager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.metaEvolution = meta
+}
+
+// MetaEvolution returns the attached meta-evolution manager.
+func (m *LifecycleManager) MetaEvolution() *MetaEvolutionManager {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.metaEvolution
 }
