@@ -21,6 +21,10 @@ type State struct {
 	SubCallCount   int `json:"sub_call_count"`
 	REPLExecutions int `json:"repl_executions"`
 
+	// REPL resource usage
+	REPLCPUTimeMS   int64   `json:"repl_cpu_time_ms"`   // Cumulative CPU time in milliseconds
+	REPLPeakMemoryMB float64 `json:"repl_peak_memory_mb"` // Peak memory usage in MB
+
 	// Time
 	SessionStart time.Time     `json:"session_start"`
 	TaskStart    time.Time     `json:"task_start,omitempty"`
@@ -141,6 +145,16 @@ func (t *Tracker) IncrementREPLExecution() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.state.REPLExecutions++
+}
+
+// UpdateREPLResources updates REPL resource usage metrics.
+func (t *Tracker) UpdateREPLResources(cpuTimeMS int64, peakMemoryMB float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.state.REPLCPUTimeMS += cpuTimeMS
+	if peakMemoryMB > t.state.REPLPeakMemoryMB {
+		t.state.REPLPeakMemoryMB = peakMemoryMB
+	}
 }
 
 // checkLimitsLocked checks if any limits are exceeded. Must be called with lock held.

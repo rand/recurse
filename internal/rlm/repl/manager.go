@@ -40,6 +40,12 @@ type Manager struct {
 
 	// memoryHandler handles memory callbacks from Python during execution.
 	memoryHandler MemoryCallbackHandler
+
+	// resourceMonitor tracks resource usage for the REPL process.
+	resourceMonitor *ResourceMonitor
+
+	// resourceCallback is called when resource events occur.
+	resourceCallback ResourceCallback
 }
 
 // Options configures the REPL manager.
@@ -176,10 +182,19 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.running.Store(true)
 	m.startedAt = time.Now()
 
+	// Initialize resource monitor
+	m.resourceMonitor = NewResourceMonitor(cmd.Process.Pid, m.sandbox.Resources)
+
 	// Wait for ready signal
 	if err := m.waitReady(ctx); err != nil {
 		m.Stop()
 		return fmt.Errorf("wait ready: %w", err)
+	}
+
+	// Capture baseline resource usage after startup
+	if err := m.resourceMonitor.CaptureBaseline(); err != nil {
+		// Non-fatal, just log
+		// TODO: Add proper logging
 	}
 
 	return nil
@@ -270,6 +285,24 @@ func (m *Manager) SetMemoryHandler(handler MemoryCallbackHandler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.memoryHandler = handler
+}
+
+// SetResourceCallback sets the callback for resource events.
+func (m *Manager) SetResourceCallback(callback ResourceCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resourceCallback = callback
+}
+
+// ResourceStats returns the cumulative resource usage for this REPL session.
+func (m *Manager) ResourceStats() *ResourceStats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.resourceMonitor == nil {
+		return nil
+	}
+	stats := m.resourceMonitor.CumulativeStats()
+	return &stats
 }
 
 // Execute runs Python code and returns the result.

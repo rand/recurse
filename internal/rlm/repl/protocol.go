@@ -96,6 +96,11 @@ type StatusResult struct {
 	MemoryUsedMB float64 `json:"memory_used_mb"`
 	Uptime       int64   `json:"uptime_seconds"`
 	ExecCount    int     `json:"exec_count"` // number of executions
+
+	// Resource usage (CPU time in milliseconds)
+	UserCPUMS  int64 `json:"user_cpu_ms,omitempty"`
+	SysCPUMS   int64 `json:"sys_cpu_ms,omitempty"`
+	TotalCPUMS int64 `json:"total_cpu_ms,omitempty"`
 }
 
 // encodeRequest creates a JSON-encoded request.

@@ -1,6 +1,9 @@
 package repl
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // SandboxConfig defines the constraints for Python execution.
 type SandboxConfig struct {
@@ -20,9 +23,8 @@ type SandboxConfig struct {
 	// Defaults to 30 seconds.
 	Timeout time.Duration
 
-	// MemoryLimitMB is the maximum memory usage in megabytes.
-	// Defaults to 1024 (1GB).
-	MemoryLimitMB int
+	// Resources configures memory and CPU limits.
+	Resources ResourceConfig
 }
 
 // DefaultSandboxConfig returns the default sandbox configuration.
@@ -32,7 +34,7 @@ func DefaultSandboxConfig() SandboxConfig {
 		WritePath:      "",  // Will be set to temp dir
 		NetworkEnabled: false,
 		Timeout:        30 * time.Second,
-		MemoryLimitMB:  1024,
+		Resources:      DefaultResourceConfig(),
 	}
 }
 
@@ -41,8 +43,14 @@ func (c *SandboxConfig) Validate() error {
 	if c.Timeout <= 0 {
 		c.Timeout = 30 * time.Second
 	}
-	if c.MemoryLimitMB <= 0 {
-		c.MemoryLimitMB = 1024
+	if c.Resources.MemoryLimitMB <= 0 {
+		c.Resources.MemoryLimitMB = 1024
+	}
+	if c.Resources.CPUTimeLimitSec <= 0 {
+		c.Resources.CPUTimeLimitSec = 60
+	}
+	if c.Resources.WarnMemoryPercent <= 0 {
+		c.Resources.WarnMemoryPercent = 80
 	}
 	return nil
 }
@@ -55,5 +63,13 @@ func (c *SandboxConfig) ToEnv() []string {
 	if c.NetworkEnabled {
 		env = append(env, "RECURSE_NETWORK=1")
 	}
+	// Add resource limits
+	env = append(env, fmt.Sprintf("RECURSE_MEMORY_LIMIT_MB=%d", c.Resources.MemoryLimitMB))
+	env = append(env, fmt.Sprintf("RECURSE_CPU_LIMIT_SEC=%d", c.Resources.CPUTimeLimitSec))
 	return env
+}
+
+// MemoryLimitMB returns the memory limit for backward compatibility.
+func (c *SandboxConfig) MemoryLimitMB() int {
+	return c.Resources.MemoryLimitMB
 }

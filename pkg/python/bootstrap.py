@@ -12,13 +12,58 @@ import collections
 import io
 import itertools
 import json
+import os
 import pathlib
 import re
+import resource
+import signal
 import sys
 import time
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Any
+
+
+# =============================================================================
+# Resource Limits Initialization
+# =============================================================================
+# Set hard resource limits based on environment variables from Go.
+# This ensures the Python process cannot exceed configured limits.
+
+def _init_resource_limits():
+    """Initialize resource limits from environment variables."""
+    # Memory limit (address space)
+    mem_limit_mb = os.environ.get("RECURSE_MEMORY_LIMIT_MB")
+    if mem_limit_mb:
+        try:
+            limit_bytes = int(mem_limit_mb) * 1024 * 1024
+            # Set both soft and hard limits
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+        except (ValueError, resource.error) as e:
+            # Log but don't fail - some systems may not support this
+            sys.stderr.write(f"Warning: Could not set memory limit: {e}\n")
+
+    # CPU time limit per execution
+    cpu_limit_sec = os.environ.get("RECURSE_CPU_LIMIT_SEC")
+    if cpu_limit_sec:
+        try:
+            limit_sec = int(cpu_limit_sec)
+            # Set CPU time limit - this generates SIGXCPU when exceeded
+            resource.setrlimit(resource.RLIMIT_CPU, (limit_sec, limit_sec))
+        except (ValueError, resource.error) as e:
+            sys.stderr.write(f"Warning: Could not set CPU limit: {e}\n")
+
+
+def _handle_cpu_exceeded(signum, frame):
+    """Handle SIGXCPU (CPU time limit exceeded)."""
+    raise RuntimeError("CPU time limit exceeded")
+
+
+# Install signal handler for CPU limit
+signal.signal(signal.SIGXCPU, _handle_cpu_exceeded)
+
+# Initialize limits at module load time
+_init_resource_limits()
 
 # Try to import pydantic if available
 try:
@@ -1152,20 +1197,27 @@ class REPL:
         return {"variables": self.namespace.list_vars()}
 
     def status(self) -> dict:
-        """Return REPL status."""
-        import resource
-        mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # On macOS, ru_maxrss is in bytes; on Linux it's in KB
+        """Return REPL status with resource usage."""
+        rusage = resource.getrusage(resource.RUSAGE_SELF)
+
+        # Memory: ru_maxrss is in bytes on macOS, KB on Linux
         if sys.platform == "darwin":
-            mem_mb = mem_usage / (1024 * 1024)
+            mem_mb = rusage.ru_maxrss / (1024 * 1024)
         else:
-            mem_mb = mem_usage / 1024
+            mem_mb = rusage.ru_maxrss / 1024
+
+        # CPU time in milliseconds
+        user_cpu_ms = int(rusage.ru_utime * 1000)
+        sys_cpu_ms = int(rusage.ru_stime * 1000)
 
         return {
             "running": True,
             "memory_used_mb": round(mem_mb, 2),
             "uptime_seconds": int(time.time() - self.start_time),
-            "exec_count": self.exec_count
+            "exec_count": self.exec_count,
+            "user_cpu_ms": user_cpu_ms,
+            "sys_cpu_ms": sys_cpu_ms,
+            "total_cpu_ms": user_cpu_ms + sys_cpu_ms,
         }
 
 
