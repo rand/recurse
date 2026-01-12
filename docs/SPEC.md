@@ -52,54 +52,54 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         TUI Layer                                │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐   │
-│  │  Chat    │ │  Budget  │ │  Memory  │ │  RLM Trace View  │   │
-│  │  Panel   │ │  Status  │ │Inspector │ │  (REPL stream)   │   │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────────────┘   │
+│                         TUI Layer                               │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐    │
+│  │  Chat    │ │  Budget  │ │  Memory  │ │  RLM Trace View  │    │
+│  │  Panel   │ │  Status  │ │Inspector │ │  (REPL stream)   │    │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────────────┘    │
 ├─────────────────────────────────────────────────────────────────┤
-│                     Orchestration Layer                          │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                   Meta-Controller                        │   │
-│  │  (Claude Haiku 4.5: recursion, memory, budget decisions) │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│  ┌──────────────────────┐  ┌──────────────────────────────┐   │
-│  │    RLM Controller    │  │      Budget Manager          │   │
-│  │  • Decomposition     │  │  • Token tracking            │   │
-│  │  • Sub-LM dispatch   │  │  • Cost accounting           │   │
-│  │  • Result synthesis  │  │  • Limit enforcement         │   │
-│  └──────────────────────┘  └──────────────────────────────┘   │
+│                     Orchestration Layer                         │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                   Meta-Controller                       │    │
+│  │  (Claude Haiku 4.5: recursion, memory, budget decisions)│    │
+│  └─────────────────────────────────────────────────────────┘    │
+│  ┌──────────────────────┐  ┌──────────────────────────────┐     │
+│  │    RLM Controller    │  │      Budget Manager          │     │
+│  │  • Decomposition     │  │  • Token tracking            │     │
+│  │  • Sub-LM dispatch   │  │  • Cost accounting           │     │
+│  │  • Result synthesis  │  │  • Limit enforcement         │     │
+│  └──────────────────────┘  └──────────────────────────────┘     │
 ├─────────────────────────────────────────────────────────────────┤
-│                      Memory Substrate                            │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │               Tiered Hypergraph Memory                   │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────────────────────┐ │   │
-│  │  │  Task   │→ │ Session │→ │      Long-term          │ │   │
-│  │  │ Working │  │ Accum.  │  │  (persistent across     │ │   │
-│  │  │ Memory  │  │         │  │   projects/sessions)    │ │   │
-│  │  └─────────┘  └─────────┘  └─────────────────────────┘ │   │
-│  │                                                         │   │
-│  │  ┌─────────────────────────────────────────────────┐   │   │
-│  │  │            Reasoning Trace Layer                 │   │   │
-│  │  │  Goals → Decisions → Options → Actions → Outcomes│   │   │
-│  │  └─────────────────────────────────────────────────┘   │   │
-│  └─────────────────────────────────────────────────────────┘   │
+│                      Memory Substrate                           │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │               Tiered Hypergraph Memory                  │    │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────────────────────┐  │    │
+│  │  │  Task   │→ │ Session │→ │      Long-term          │  │    │
+│  │  │ Working │  │ Accum.  │  │  (persistent across     │  │    │
+│  │  │ Memory  │  │         │  │   projects/sessions)    │  │    │
+│  │  └─────────┘  └─────────┘  └─────────────────────────┘  │    │
+│  │                                                         │    │
+│  │  ┌──────────────────────────────────────────────────┐   │    │
+│  │  │            Reasoning Trace Layer                 │   │    │
+│  │  │  Goals → Decisions → Options → Actions → Outcomes│   │    │
+│  │  └──────────────────────────────────────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────┘    │
 ├─────────────────────────────────────────────────────────────────┤
-│                      Execution Layer                             │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐  │
-│  │  Python    │ │   Code     │ │    LLM     │ │  External  │  │
-│  │   REPL     │ │Understanding│ │  Interface │ │   Tools    │  │
-│  │(uv/ruff/ty)│ │(LSP/TS/AST)│ │ (Fantasy)  │ │  (MCP/git) │  │
-│  └────────────┘ └────────────┘ └────────────┘ └────────────┘  │
+│                      Execution Layer                            │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐    │
+│  │  Python    │ │   Code     │ │    LLM     │ │  External  │    │
+│  │   REPL     │ │Understanding││  Interface │ │   Tools    │    │
+│  │(uv/ruff/ty)│ │(LSP/TS/AST)│ │ (Fantasy)  │ │  (MCP/git) │    │
+│  └────────────┘ └────────────┘ └────────────┘ └────────────┘    │
 ├─────────────────────────────────────────────────────────────────┤
-│                      Storage Layer                               │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                SQLite + Extensions                       │   │
-│  │  • Conversations (from Crush)                            │   │
-│  │  • Hypergraph tables (nodes, hyperedges, membership)     │   │
-│  │  • Memory evolution audit log                            │   │
-│  │  • Budget/usage history                                  │   │
-│  └─────────────────────────────────────────────────────────┘   │
+│                      Storage Layer                              │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                SQLite + Extensions                      │    │
+│  │  • Conversations (from Crush)                           │    │
+│  │  • Hypergraph tables (nodes, hyperedges, membership)    │    │
+│  │  • Memory evolution audit log                           │    │
+│  │  • Budget/usage history                                 │    │
+│  └─────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
