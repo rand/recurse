@@ -871,3 +871,123 @@ func TestGenerateRLMSystemPrompt_EfficiencyEmphasis(t *testing.T) {
 	// Check that examples are concise (should have FINAL in them)
 	assert.Contains(t, prompt, "FINAL(")
 }
+
+// TestPrepareContextWithOptions_ModeOverride tests explicit mode override.
+func TestPrepareContextWithOptions_ModeOverride(t *testing.T) {
+	ctx := context.Background()
+
+	// Create wrapper with REPL for RLM support
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+
+	replMgr, err := repl.NewManager(repl.Options{})
+	require.NoError(t, err)
+	require.NoError(t, replMgr.Start(ctx))
+	defer replMgr.Stop()
+	w.SetREPLManager(replMgr)
+
+	// Small context that would normally use Direct mode
+	contexts := []ContextSource{{
+		Type:    ContextTypeFile,
+		Content: "Small content",
+	}}
+
+	t.Run("auto mode uses automatic selection", func(t *testing.T) {
+		prepared, err := w.PrepareContextWithOptions(ctx, "test", contexts, PrepareOptions{
+			ModeOverride: ModeOverrideAuto,
+		})
+		require.NoError(t, err)
+		// Small context should use Direct by default
+		assert.Equal(t, ModeDirecte, prepared.Mode)
+		assert.NotContains(t, prepared.ModeReason, "override")
+	})
+
+	t.Run("force RLM overrides automatic selection", func(t *testing.T) {
+		prepared, err := w.PrepareContextWithOptions(ctx, "test", contexts, PrepareOptions{
+			ModeOverride: ModeOverrideRLM,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, ModeRLM, prepared.Mode)
+		assert.Contains(t, prepared.ModeReason, "forced RLM")
+	})
+
+	t.Run("force Direct overrides automatic selection", func(t *testing.T) {
+		// Large context that would normally use RLM
+		largeContent := strings.Repeat("Large content. ", 1000)
+		largeContexts := []ContextSource{{Type: ContextTypeFile, Content: largeContent}}
+
+		prepared, err := w.PrepareContextWithOptions(ctx, "test", largeContexts, PrepareOptions{
+			ModeOverride: ModeOverrideDirect,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, ModeDirecte, prepared.Mode)
+		assert.Contains(t, prepared.ModeReason, "forced Direct")
+	})
+
+	t.Run("empty override uses auto", func(t *testing.T) {
+		prepared, err := w.PrepareContextWithOptions(ctx, "test", contexts, PrepareOptions{})
+		require.NoError(t, err)
+		// Should behave like auto mode
+		assert.Equal(t, ModeDirecte, prepared.Mode)
+	})
+}
+
+// TestPrepareContextWithOptions_RLMNotAvailable tests error when forcing RLM without REPL.
+func TestPrepareContextWithOptions_RLMNotAvailable(t *testing.T) {
+	ctx := context.Background()
+
+	// Create wrapper WITHOUT REPL
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+	// Don't set REPL manager
+
+	contexts := []ContextSource{{Type: ContextTypeFile, Content: "test"}}
+
+	t.Run("force RLM without REPL returns error", func(t *testing.T) {
+		_, err := w.PrepareContextWithOptions(ctx, "test", contexts, PrepareOptions{
+			ModeOverride: ModeOverrideRLM,
+		})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "context loader not available")
+	})
+
+	t.Run("auto mode gracefully falls back to Direct", func(t *testing.T) {
+		prepared, err := w.PrepareContextWithOptions(ctx, "test", contexts, PrepareOptions{
+			ModeOverride: ModeOverrideAuto,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, ModeDirecte, prepared.Mode)
+	})
+}
+
+// TestPrepareContextWithOptions_SkipClassification tests skipping classification.
+func TestPrepareContextWithOptions_SkipClassification(t *testing.T) {
+	ctx := context.Background()
+
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+
+	contexts := []ContextSource{{Type: ContextTypeFile, Content: "test"}}
+
+	t.Run("classification enabled by default", func(t *testing.T) {
+		prepared, err := w.PrepareContextWithOptions(ctx, "How many times does 'x' appear?", contexts, PrepareOptions{})
+		require.NoError(t, err)
+		assert.NotNil(t, prepared.Classification)
+		assert.Equal(t, TaskTypeComputational, prepared.Classification.Type)
+	})
+
+	t.Run("skip classification when requested", func(t *testing.T) {
+		prepared, err := w.PrepareContextWithOptions(ctx, "How many times does 'x' appear?", contexts, PrepareOptions{
+			SkipClassification: true,
+		})
+		require.NoError(t, err)
+		assert.Nil(t, prepared.Classification)
+	})
+}
+
+// TestModeOverrideConstants tests mode override constant values.
+func TestModeOverrideConstants(t *testing.T) {
+	assert.Equal(t, ModeOverride("auto"), ModeOverrideAuto)
+	assert.Equal(t, ModeOverride("rlm"), ModeOverrideRLM)
+	assert.Equal(t, ModeOverride("direct"), ModeOverrideDirect)
+}

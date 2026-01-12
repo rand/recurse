@@ -108,24 +108,61 @@ func (w *Wrapper) SetLLMClient(client meta.LLMClient) {
 
 // PrepareContext prepares context for a prompt, potentially externalizing it.
 // Returns the modified prompt and any loaded context info.
+// Uses automatic mode selection. For explicit mode control, use PrepareContextWithOptions.
 func (w *Wrapper) PrepareContext(ctx context.Context, prompt string, contexts []ContextSource) (*PreparedPrompt, error) {
+	return w.PrepareContextWithOptions(ctx, prompt, contexts, PrepareOptions{})
+}
+
+// PrepareContextWithOptions prepares context with explicit options.
+// Allows forcing RLM or Direct mode via ModeOverride.
+func (w *Wrapper) PrepareContextWithOptions(ctx context.Context, prompt string, contexts []ContextSource, opts PrepareOptions) (*PreparedPrompt, error) {
 	// Calculate total context size
 	totalTokens := estimateTokens(prompt)
 	for _, c := range contexts {
 		totalTokens += estimateTokens(c.Content)
 	}
 
-	// Classify the task if classifier is available
+	// Classify the task if classifier is available and not skipped
 	var classification *Classification
-	if w.classifier != nil {
+	if w.classifier != nil && !opts.SkipClassification {
 		c := w.classifier.Classify(prompt, contexts)
 		classification = &c
 	}
 
-	// Decide mode based on classification and context size
-	mode, reason := w.selectMode(prompt, totalTokens, contexts, classification)
+	// Check for mode override
+	var mode ExecutionMode
+	var reason string
 
-	if mode == ModeRLM && w.contextLoader != nil {
+	switch opts.ModeOverride {
+	case ModeOverrideRLM:
+		mode = ModeRLM
+		reason = "mode override: forced RLM"
+	case ModeOverrideDirect:
+		mode = ModeDirecte
+		reason = "mode override: forced Direct"
+	default:
+		// Auto mode: use automatic selection
+		mode, reason = w.selectMode(prompt, totalTokens, contexts, classification)
+	}
+
+	// Check if RLM is actually possible when forced
+	if mode == ModeRLM {
+		if w.contextLoader == nil {
+			if opts.ModeOverride == ModeOverrideRLM {
+				return nil, fmt.Errorf("RLM mode requested but context loader not available")
+			}
+			mode = ModeDirecte
+			reason = "RLM not available, falling back to Direct"
+		} else if w.replMgr == nil {
+			if opts.ModeOverride == ModeOverrideRLM {
+				return nil, fmt.Errorf("RLM mode requested but REPL not available")
+			}
+			mode = ModeDirecte
+			reason = "REPL not available, falling back to Direct"
+		}
+	}
+
+	if mode == ModeRLM {
 		prepared, err := w.prepareRLMMode(ctx, prompt, contexts, totalTokens, classification)
 		if err != nil {
 			return nil, err
@@ -175,6 +212,30 @@ const (
 	ModeDirecte ExecutionMode = "direct" // Include context in prompt
 	ModeRLM     ExecutionMode = "rlm"    // Externalize context to REPL
 )
+
+// ModeOverride specifies how to override automatic mode selection.
+type ModeOverride string
+
+const (
+	// ModeOverrideAuto uses automatic selection based on task type and context size.
+	ModeOverrideAuto ModeOverride = "auto"
+
+	// ModeOverrideRLM forces RLM mode regardless of automatic selection.
+	ModeOverrideRLM ModeOverride = "rlm"
+
+	// ModeOverrideDirect forces Direct mode regardless of automatic selection.
+	ModeOverrideDirect ModeOverride = "direct"
+)
+
+// PrepareOptions contains options for context preparation.
+type PrepareOptions struct {
+	// ModeOverride forces a specific execution mode.
+	// Default (empty or "auto") uses automatic selection.
+	ModeOverride ModeOverride
+
+	// SkipClassification disables task classification even if classifier is available.
+	SkipClassification bool
+}
 
 // selectMode determines which execution mode to use based on task classification and context size.
 // Returns the selected mode and a human-readable reason for the selection.
