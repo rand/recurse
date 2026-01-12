@@ -739,3 +739,135 @@ func TestSelectMode_NoREPL(t *testing.T) {
 	assert.Equal(t, ModeDirecte, mode)
 	assert.Contains(t, reason, "REPL not available")
 }
+
+// TestGenerateRLMSystemPrompt_TaskTypeGuidance tests task-specific guidance in system prompt.
+func TestGenerateRLMSystemPrompt_TaskTypeGuidance(t *testing.T) {
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+
+	loaded := &LoadedContext{
+		Variables: map[string]VariableInfo{
+			"context": {Description: "Test context", TokenCount: 1000},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		classification *Classification
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name: "computational task gets counting guidance",
+			classification: &Classification{
+				Type:       TaskTypeComputational,
+				Confidence: 0.9,
+			},
+			wantContains: []string{
+				"Task Type: COMPUTATIONAL",
+				"counting/summing/aggregation",
+				"Do NOT use llm_call()",
+				"Counting (ONE iteration)",
+				"re.findall",
+			},
+			wantNotContain: []string{
+				"Task Type: RETRIEVAL",
+				"Task Type: ANALYTICAL",
+			},
+		},
+		{
+			name: "retrieval task gets search guidance",
+			classification: &Classification{
+				Type:       TaskTypeRetrieval,
+				Confidence: 0.85,
+			},
+			wantContains: []string{
+				"Task Type: RETRIEVAL",
+				"find/locate task",
+				"grep()",
+				"Finding Specific Value (ONE iteration)",
+			},
+			wantNotContain: []string{
+				"Task Type: COMPUTATIONAL",
+				"Task Type: ANALYTICAL",
+			},
+		},
+		{
+			name: "analytical task gets relationship guidance",
+			classification: &Classification{
+				Type:       TaskTypeAnalytical,
+				Confidence: 0.8,
+			},
+			wantContains: []string{
+				"Task Type: ANALYTICAL",
+				"reasoning about relationships",
+				"llm_call()",
+				"Relationship Analysis",
+			},
+			wantNotContain: []string{
+				"Task Type: COMPUTATIONAL",
+				"Task Type: RETRIEVAL",
+			},
+		},
+		{
+			name:           "low confidence gets no task-specific guidance",
+			classification: &Classification{Type: TaskTypeComputational, Confidence: 0.3},
+			wantContains: []string{
+				"Efficiency First",
+				"Quick Count", // Default examples
+			},
+			wantNotContain: []string{
+				"Task Type: COMPUTATIONAL",
+			},
+		},
+		{
+			name:           "nil classification gets default guidance",
+			classification: nil,
+			wantContains: []string{
+				"Efficiency First",
+				"Quick Count",
+				"Quick Search",
+			},
+			wantNotContain: []string{
+				"Task Type:",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prompt := w.generateRLMSystemPrompt(loaded, tt.classification)
+
+			for _, want := range tt.wantContains {
+				assert.Contains(t, prompt, want, "prompt should contain %q", want)
+			}
+
+			for _, notWant := range tt.wantNotContain {
+				assert.NotContains(t, prompt, notWant, "prompt should NOT contain %q", notWant)
+			}
+		})
+	}
+}
+
+// TestGenerateRLMSystemPrompt_EfficiencyEmphasis tests that efficiency is emphasized.
+func TestGenerateRLMSystemPrompt_EfficiencyEmphasis(t *testing.T) {
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+
+	loaded := &LoadedContext{
+		Variables: map[string]VariableInfo{
+			"data": {Description: "Data", TokenCount: 500},
+		},
+	}
+
+	prompt := w.generateRLMSystemPrompt(loaded, nil)
+
+	// Check for efficiency emphasis
+	assert.Contains(t, prompt, "Efficiency First")
+	assert.Contains(t, prompt, "ONE iteration")
+	assert.Contains(t, prompt, "FINAL() immediately")
+	assert.Contains(t, prompt, "Use Python directly")
+
+	// Check that examples are concise (should have FINAL in them)
+	assert.Contains(t, prompt, "FINAL(")
+}

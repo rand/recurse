@@ -126,11 +126,10 @@ func (w *Wrapper) PrepareContext(ctx context.Context, prompt string, contexts []
 	mode, reason := w.selectMode(prompt, totalTokens, contexts, classification)
 
 	if mode == ModeRLM && w.contextLoader != nil {
-		prepared, err := w.prepareRLMMode(ctx, prompt, contexts, totalTokens)
+		prepared, err := w.prepareRLMMode(ctx, prompt, contexts, totalTokens, classification)
 		if err != nil {
 			return nil, err
 		}
-		prepared.Classification = classification
 		prepared.ModeReason = reason
 		return prepared, nil
 	}
@@ -234,11 +233,12 @@ func (w *Wrapper) shouldUseRLMMode(totalTokens int, contexts []ContextSource) bo
 }
 
 // prepareRLMMode prepares for RLM-style execution.
-func (w *Wrapper) prepareRLMMode(ctx context.Context, prompt string, contexts []ContextSource, totalTokens int) (*PreparedPrompt, error) {
+func (w *Wrapper) prepareRLMMode(ctx context.Context, prompt string, contexts []ContextSource, totalTokens int, classification *Classification) (*PreparedPrompt, error) {
 	result := &PreparedPrompt{
 		OriginalPrompt: prompt,
 		Mode:           ModeRLM,
 		TotalTokens:    totalTokens,
+		Classification: classification,
 	}
 
 	// Load contexts into REPL
@@ -254,8 +254,8 @@ func (w *Wrapper) prepareRLMMode(ctx context.Context, prompt string, contexts []
 		slog.Warn("Failed to store user query in REPL", "error", err)
 	}
 
-	// Generate RLM system prompt
-	result.SystemPrompt = w.generateRLMSystemPrompt(loaded)
+	// Generate RLM system prompt with task-type-specific guidance
+	result.SystemPrompt = w.generateRLMSystemPrompt(loaded, classification)
 
 	// Generate minimal prompt that references externalized context
 	result.FinalPrompt = w.generateRLMPrompt(prompt, loaded)
@@ -263,9 +263,18 @@ func (w *Wrapper) prepareRLMMode(ctx context.Context, prompt string, contexts []
 	slog.Info("RLM mode activated",
 		"total_tokens", totalTokens,
 		"externalized_vars", len(loaded.Variables),
+		"task_type", w.getTaskTypeString(classification),
 		"mode", "rlm")
 
 	return result, nil
+}
+
+// getTaskTypeString returns a string representation of the task type for logging.
+func (w *Wrapper) getTaskTypeString(classification *Classification) string {
+	if classification == nil {
+		return "unknown"
+	}
+	return string(classification.Type)
 }
 
 // prepareDirectMode prepares for direct execution (context in prompt).
@@ -297,20 +306,27 @@ func (w *Wrapper) prepareDirectMode(prompt string, contexts []ContextSource) *Pr
 }
 
 // generateRLMSystemPrompt generates the system prompt for RLM mode.
-func (w *Wrapper) generateRLMSystemPrompt(loaded *LoadedContext) string {
+func (w *Wrapper) generateRLMSystemPrompt(loaded *LoadedContext, classification *Classification) string {
 	var sb strings.Builder
 
 	sb.WriteString(`You are operating in RLM (Recursive Language Model) mode.
 
-Context has been externalized to Python variables. Use code execution to explore and process it.
+Context has been externalized to Python variables. Use code execution to process it.
 
-## Key Rules
-1. Context is NOT in this prompt - access it via Python code
-2. Use peek(), grep(), partition() to explore context
-3. Use llm_call() for focused sub-tasks on context slices
-4. Call FINAL(response) when you have your answer
+## Critical: Efficiency First
+- **Solve in ONE iteration when possible** - don't explore if you can compute directly
+- **Call FINAL() immediately** when you have the answer - no verification steps needed
+- **Use Python directly** for counting, summing, searching - don't delegate to llm_call()
+- Only use llm_call() when you need reasoning about content, not mechanical operations
 
-## Available Variables
+`)
+
+	// Add task-type-specific guidance
+	if classification != nil && classification.Confidence >= 0.5 {
+		sb.WriteString(w.getTaskTypeGuidance(classification.Type))
+	}
+
+	sb.WriteString(`## Available Variables
 `)
 
 	if loaded != nil {
@@ -320,72 +336,143 @@ Context has been externalized to Python variables. Use code execution to explore
 	}
 
 	sb.WriteString(`
-## Available Functions
+## Core Functions
 
-### Core Operations
+### Direct Operations (use these first - no LLM needed)
+- grep(ctx, pattern, context_lines=0) - Search for patterns, returns matches
 - peek(ctx, start, end, by_lines=False) - View slice of context
-- grep(ctx, pattern, context_lines=0) - Search for patterns with optional context
 - partition(ctx, n=4, overlap=0) - Split into n chunks
-- partition_by_lines(ctx, n=4) - Split by lines (respects line boundaries)
-- extract_functions(ctx, language) - Extract function definitions from code
-
-### LLM Operations
-- llm_call(prompt, context, model) - Single sub-LLM call
-- llm_batch(prompts, contexts, model) - Batch sub-LLM calls
-- summarize(ctx, max_length=500, focus=None) - Summarize context with LLM
-- map_reduce(ctx, map_prompt, reduce_prompt, n_chunks=4) - Map-reduce pattern
-- find_relevant(ctx, query, top_k=5) - Find relevant sections for a query
-
-### Utilities
 - count_tokens_approx(text) - Estimate token count
 
-### Output Functions
-- FINAL(response) - Return text as final answer
-- FINAL_VAR(variable_name) - Return variable value as final answer
-- FINAL_JSON(obj) - Return JSON-formatted output
-- FINAL_CODE(code, language) - Return code with language annotation
-- has_final_output() - Check if FINAL was called
+### LLM Operations (use only when reasoning is needed)
+- llm_call(prompt, context, model) - Single sub-LLM call for analysis
+- map_reduce(ctx, map_prompt, reduce_prompt, n_chunks=4) - For very large contexts only
 
-### Memory Functions (Persistent Knowledge)
-- memory_query(query, limit=10) - Search memory for relevant facts
-- memory_add_fact(content, confidence=0.8) - Store a fact
-- memory_add_experience(content, outcome, success) - Record what worked/didn't
-- memory_get_context(limit=10) - Get recent relevant context
-- memory_relate(label, subject_id, object_id) - Link two memory nodes
+### Output (call immediately when you have the answer)
+- FINAL(response) - Return your answer (string)
+- FINAL_JSON(obj) - Return structured data
 
-## Example Workflows
+`)
 
-### Simple Analysis
+	// Add efficient examples based on task type
+	sb.WriteString(w.getTaskTypeExamples(classification))
+
+	return sb.String()
+}
+
+// getTaskTypeGuidance returns task-specific guidance based on classification.
+func (w *Wrapper) getTaskTypeGuidance(taskType TaskType) string {
+	switch taskType {
+	case TaskTypeComputational:
+		return `## Task Type: COMPUTATIONAL
+This is a counting/summing/aggregation task. Solve it directly with Python:
+- Use grep() to find all matches, then len() to count
+- Use regex and sum() for aggregation
+- Do NOT use llm_call() - compute the answer directly
+- Call FINAL() with the number/result immediately
+
+`
+	case TaskTypeRetrieval:
+		return `## Task Type: RETRIEVAL
+This is a find/locate task. Search directly:
+- Use grep() to find the specific information
+- Extract the value with regex or string operations
+- Call FINAL() with the found value immediately
+- Do NOT use llm_call() for simple lookups
+
+`
+	case TaskTypeAnalytical:
+		return `## Task Type: ANALYTICAL
+This requires reasoning about relationships:
+- First use grep() to find relevant mentions
+- Then use llm_call() to analyze the relationship
+- Keep analysis focused - one llm_call() should suffice
+- Call FINAL() with yes/no or the conclusion
+
+`
+	default:
+		return ""
+	}
+}
+
+// getTaskTypeExamples returns efficient examples based on task type.
+func (w *Wrapper) getTaskTypeExamples(classification *Classification) string {
+	var sb strings.Builder
+	sb.WriteString("## Efficient Patterns\n\n")
+
+	// Always show the most relevant example first based on task type
+	if classification != nil && classification.Confidence >= 0.5 {
+		switch classification.Type {
+		case TaskTypeComputational:
+			sb.WriteString(`### Counting (ONE iteration)
 ` + "```python" + `
-# Explore the context first
-preview = peek(file_content, 0, 2000)
-matches = grep(file_content, "function|class")
-result = llm_call("Analyze this code", file_content, "balanced")
-FINAL(result)
+# Count occurrences - direct Python, no LLM needed
+import re
+count = len(re.findall(r'\bword\b', context, re.IGNORECASE))
+FINAL(str(count))
 ` + "```" + `
 
-### Large Context with Map-Reduce
+### Summing (ONE iteration)
 ` + "```python" + `
-# For large contexts, use map-reduce pattern
-if count_tokens_approx(file_content) > 10000:
-    result = map_reduce(
-        file_content,
-        map_prompt="List all functions and their purpose",
-        reduce_prompt="Combine into a comprehensive API overview",
-        n_chunks=4
-    )
+# Extract and sum numbers - direct Python
+import re
+numbers = [float(x.replace(',', '')) for x in re.findall(r'\$?([\d,]+\.?\d*)', context)]
+FINAL(str(sum(numbers)))
+` + "```" + `
+`)
+			return sb.String()
+
+		case TaskTypeRetrieval:
+			sb.WriteString(`### Finding Specific Value (ONE iteration)
+` + "```python" + `
+# Find the code/password/ID directly
+matches = grep(context, r'(code|password|key|id)[:\s]+(\S+)', context_lines=0)
+if matches:
+    import re
+    match = re.search(r'(code|password|key|id)[:\s]+(\S+)', matches[0], re.IGNORECASE)
+    FINAL(match.group(2) if match else "Not found")
 else:
-    result = llm_call("Analyze this code", file_content, "balanced")
-FINAL(result)
+    FINAL("Not found")
+` + "```" + `
+`)
+			return sb.String()
+
+		case TaskTypeAnalytical:
+			sb.WriteString(`### Relationship Analysis (ONE-TWO iterations)
+` + "```python" + `
+# Find mentions and analyze relationship
+mentions_a = grep(context, r'Alice|Bob', context_lines=2)
+if mentions_a:
+    # Check if they appear together
+    result = llm_call("Do these people work together? Answer yes or no.",
+                      "\n".join(mentions_a), "fast")
+    FINAL(result)
+else:
+    FINAL("no")
+` + "```" + `
+`)
+			return sb.String()
+		}
+	}
+
+	// Default examples for unknown task type
+	sb.WriteString(`### Quick Count
+` + "```python" + `
+import re
+count = len(re.findall(r'pattern', context))
+FINAL(str(count))
 ` + "```" + `
 
-### Focused Search
+### Quick Search
 ` + "```python" + `
-# Find relevant sections for a specific query
-relevant = find_relevant(codebase, "error handling")
-context = "\n\n".join([r['section'] for r in relevant])
-analysis = llm_call("Analyze the error handling patterns", context, "balanced")
-FINAL(analysis)
+matches = grep(context, r'what_you_need')
+FINAL(matches[0] if matches else "Not found")
+` + "```" + `
+
+### Analysis (only if reasoning needed)
+` + "```python" + `
+result = llm_call("Analyze this", context, "fast")
+FINAL(result)
 ` + "```" + `
 `)
 
