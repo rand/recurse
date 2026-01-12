@@ -242,3 +242,94 @@ Each session creates a trace file with:
 - Task decompositions
 - Memory queries
 - Synthesis steps
+
+---
+
+## Session State Persistence
+
+Recurse automatically checkpoints session state to enable recovery after crashes or unexpected exits.
+
+### How It Works
+
+The checkpoint system periodically saves:
+- **Session ID** - Current session identifier
+- **Task State** - Memory node counts (facts, entities, snippets)
+- **RLM State** - Current iteration, last task, execution mode
+- **Service Stats** - Execution counts, token usage, durations
+
+### Checkpoint Location
+
+Checkpoints are stored in your project's data directory:
+```
+.recurse/session_checkpoint.json
+```
+
+### Checkpoint Behavior
+
+| Event | Behavior |
+|-------|----------|
+| Normal operation | Checkpoint saved every 30 seconds |
+| Normal exit | Checkpoint cleared (no recovery needed) |
+| Crash/kill | Checkpoint retained for recovery |
+| Startup with checkpoint | Recovery info logged |
+
+### Checkpoint Contents
+
+Example checkpoint structure:
+```json
+{
+  "version": 1,
+  "session_id": "abc123",
+  "created_at": "2026-01-12T14:30:00Z",
+  "task_state": {
+    "task_id": "task-12345",
+    "node_count": 42,
+    "fact_count": 15,
+    "entity_count": 10
+  },
+  "rlm_state": {
+    "current_iteration": 3,
+    "max_iterations": 10,
+    "last_task": "count words in file",
+    "repl_active": true,
+    "mode": "rlm"
+  },
+  "service_stats": {
+    "total_executions": 5,
+    "total_tokens": 12000
+  }
+}
+```
+
+### Stale Checkpoint Cleanup
+
+Checkpoints older than 24 hours are automatically removed on startup. This prevents recovery prompts for very old sessions that are no longer relevant.
+
+### Recovery Detection
+
+On startup, if a recoverable checkpoint exists, you'll see a log message:
+```
+INFO Recoverable session checkpoint found session_id=abc123 summary="Session checkpoint from 5m ago | 42 memories | task: count words..."
+```
+
+### Configuration
+
+Checkpoint behavior can be configured in the RLM service config:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `Enabled` | `true` | Enable/disable checkpointing |
+| `Interval` | `30s` | How often to save checkpoints |
+| `MaxAge` | `24h` | Maximum age before cleanup |
+
+### Persistent Storage
+
+In addition to checkpoints, the following data persists across sessions:
+
+| File | Contents |
+|------|----------|
+| `.recurse/rlm.db` | Hypergraph memory (SQLite) |
+| `.recurse/rlm_trace.db` | RLM trace events (SQLite) |
+| `.recurse/session_checkpoint.json` | Session state checkpoint |
+
+This means your memory graph and trace history survive restarts, while checkpoints provide metadata about your last session state.
