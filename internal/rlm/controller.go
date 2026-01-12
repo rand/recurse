@@ -21,6 +21,7 @@ type Controller struct {
 	synthesizer synthesize.Synthesizer
 	tracer      TraceRecorder
 	config      ControllerConfig
+	recovery    *RecoveryManager
 }
 
 // ControllerConfig configures the RLM controller.
@@ -39,6 +40,9 @@ type ControllerConfig struct {
 
 	// TraceEnabled enables trace recording.
 	TraceEnabled bool
+
+	// Recovery configures error recovery behavior.
+	Recovery RecoveryConfig
 }
 
 // DefaultControllerConfig returns sensible defaults.
@@ -49,6 +53,7 @@ func DefaultControllerConfig() ControllerConfig {
 		MemoryQueryLimit:  10,
 		StoreDecisions:    true,
 		TraceEnabled:      true,
+		Recovery:          DefaultRecoveryConfig(),
 	}
 }
 
@@ -82,6 +87,7 @@ func NewController(
 		store:       store,
 		synthesizer: synthesize.NewConcatenateSynthesizer(),
 		config:      cfg,
+		recovery:    NewRecoveryManager(cfg.Recovery),
 	}
 }
 
@@ -138,10 +144,13 @@ func (c *Controller) Execute(ctx context.Context, task string) (*ExecutionResult
 	return result, nil
 }
 
-// orchestrate is the recursive orchestration loop.
+// orchestrate is the recursive orchestration loop with error recovery.
 func (c *Controller) orchestrate(ctx context.Context, state meta.State, parentID string) (string, int, error) {
 	eventID := generateID()
 	totalTokens := 0
+
+	// Reset retry counter for this orchestration
+	c.recovery.ResetRetry()
 
 	// Record trace event start
 	if c.tracer != nil && c.config.TraceEnabled {
@@ -162,27 +171,8 @@ func (c *Controller) orchestrate(ctx context.Context, state meta.State, parentID
 		return "", 0, fmt.Errorf("meta decision: %w", err)
 	}
 
-	// Execute the decision
-	var response string
-	switch decision.Action {
-	case meta.ActionDirect:
-		response, totalTokens, err = c.executeDirect(ctx, state)
-
-	case meta.ActionDecompose:
-		response, totalTokens, err = c.executeDecompose(ctx, state, decision, eventID)
-
-	case meta.ActionMemoryQuery:
-		response, totalTokens, err = c.executeMemoryQuery(ctx, state, decision)
-
-	case meta.ActionSubcall:
-		response, totalTokens, err = c.executeSubcall(ctx, state, decision, eventID)
-
-	case meta.ActionSynthesize:
-		response, totalTokens, err = c.executeSynthesize(ctx, state)
-
-	default:
-		return "", 0, fmt.Errorf("unknown action: %s", decision.Action)
-	}
+	// Execute the decision with error recovery
+	response, totalTokens, err := c.executeWithRecovery(ctx, state, decision, eventID)
 
 	// Record trace event completion
 	if c.tracer != nil && c.config.TraceEnabled {
@@ -202,6 +192,118 @@ func (c *Controller) orchestrate(ctx context.Context, state meta.State, parentID
 	}
 
 	return response, totalTokens, err
+}
+
+// executeWithRecovery executes a decision with retry and degradation support.
+func (c *Controller) executeWithRecovery(ctx context.Context, state meta.State, decision *meta.Decision, eventID string) (string, int, error) {
+	var response string
+	var totalTokens int
+	var err error
+
+	for {
+		// Execute the decision
+		response, totalTokens, err = c.executeAction(ctx, state, decision, eventID)
+
+		if err == nil {
+			return response, totalTokens, nil
+		}
+
+		// Determine recovery action
+		recoveryAction := c.recovery.DetermineAction(err, decision.Action, state)
+
+		// Record the error
+		c.recovery.RecordError(ErrorRecord{
+			Category:   recoveryAction.Category,
+			Action:     string(decision.Action),
+			Error:      err.Error(),
+			Context:    truncate(state.Task, 200),
+			Recovered:  recoveryAction.ShouldRetry || recoveryAction.Degraded,
+			RetryCount: c.recovery.RetryCount(),
+			Degraded:   recoveryAction.Degraded,
+		})
+
+		// Record recovery attempt in trace
+		if c.tracer != nil && c.config.TraceEnabled {
+			c.tracer.RecordEvent(TraceEvent{
+				ID:        generateID(),
+				Type:      "recovery",
+				Action:    recoveryAction.Message,
+				Timestamp: time.Now(),
+				Depth:     state.RecursionDepth,
+				ParentID:  eventID,
+				Status:    "attempting",
+			})
+		}
+
+		// Handle retry
+		if recoveryAction.ShouldRetry {
+			c.recovery.IncrementRetry()
+
+			// Add recovery context to state
+			if recoveryAction.RetryPrompt != "" {
+				state.Task = state.Task + "\n\n" + recoveryAction.RetryPrompt
+			}
+
+			// Brief delay before retry
+			select {
+			case <-ctx.Done():
+				return "", totalTokens, ctx.Err()
+			case <-time.After(c.config.Recovery.RetryDelay):
+			}
+
+			continue
+		}
+
+		// Handle degradation to direct mode
+		if recoveryAction.Degraded {
+			// Record degradation in trace
+			if c.tracer != nil && c.config.TraceEnabled {
+				c.tracer.RecordEvent(TraceEvent{
+					ID:        generateID(),
+					Type:      "degradation",
+					Action:    "Falling back to direct mode",
+					Details:   recoveryAction.Message,
+					Timestamp: time.Now(),
+					Depth:     state.RecursionDepth,
+					ParentID:  eventID,
+					Status:    "degraded",
+				})
+			}
+
+			// Execute in direct mode
+			response, totalTokens, err = c.executeDirect(ctx, state)
+			if err != nil {
+				return "", totalTokens, fmt.Errorf("degraded execution failed: %w", err)
+			}
+			return response, totalTokens, nil
+		}
+
+		// No recovery possible
+		return "", totalTokens, WrapWithRecovery(err, recoveryAction)
+	}
+}
+
+// executeAction executes the appropriate action based on decision.
+func (c *Controller) executeAction(ctx context.Context, state meta.State, decision *meta.Decision, eventID string) (string, int, error) {
+	switch decision.Action {
+	case meta.ActionDirect:
+		return c.executeDirect(ctx, state)
+
+	case meta.ActionDecompose:
+		return c.executeDecompose(ctx, state, decision, eventID)
+
+	case meta.ActionMemoryQuery:
+		return c.executeMemoryQuery(ctx, state, decision)
+
+	case meta.ActionSubcall:
+		return c.executeSubcall(ctx, state, decision, eventID)
+
+	case meta.ActionSynthesize:
+		return c.executeSynthesize(ctx, state)
+
+	default:
+		return "", 0, fmt.Errorf("unknown action: %s", decision.Action)
+	}
 }
 
 // executeDirect answers directly using current context.
