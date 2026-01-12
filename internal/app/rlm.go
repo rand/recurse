@@ -30,6 +30,9 @@ func (app *App) InitRLM(ctx context.Context) error {
 	rlmCfg.StorePath = filepath.Join(app.config.Options.DataDirectory, "rlm.db")
 	rlmCfg.TracePath = filepath.Join(app.config.Options.DataDirectory, "rlm_trace.db")
 
+	// Configure checkpoint for session state persistence
+	rlmCfg.Checkpoint.Path = app.config.Options.DataDirectory
+
 	// Create service
 	svc, err := rlm.NewService(llmClient, rlmCfg)
 	if err != nil {
@@ -56,6 +59,14 @@ func (app *App) InitRLM(ctx context.Context) error {
 		"provider", clientType,
 		"store", rlmCfg.StorePath,
 		"trace", rlmCfg.TracePath)
+
+	// Check for recoverable checkpoint from previous session
+	if cp, err := svc.LoadCheckpoint(); err == nil && cp != nil && cp.IsRecoverable() {
+		slog.Info("Recoverable session checkpoint found",
+			"session_id", cp.SessionID,
+			"summary", cp.Summary())
+	}
+
 	return nil
 }
 

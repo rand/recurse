@@ -8,6 +8,7 @@ import (
 
 	"github.com/rand/recurse/internal/memory/evolution"
 	"github.com/rand/recurse/internal/memory/hypergraph"
+	"github.com/rand/recurse/internal/rlm/checkpoint"
 	"github.com/rand/recurse/internal/rlm/meta"
 	"github.com/rand/recurse/internal/rlm/repl"
 	"github.com/rand/recurse/internal/tui/components/dialogs/rlmtrace"
@@ -37,6 +38,9 @@ type ServiceConfig struct {
 	// OrchestratorEnabled enables RLM orchestration for prompt pre-processing.
 	// When enabled, every prompt is analyzed by RLM before being sent to the main agent.
 	OrchestratorEnabled bool
+
+	// Checkpoint configures session state persistence for crash recovery.
+	Checkpoint checkpoint.Config
 }
 
 // DefaultServiceConfig returns sensible defaults for the RLM service.
@@ -48,6 +52,7 @@ func DefaultServiceConfig() ServiceConfig {
 		MaxTraceEvents:      1000,
 		StorePath:           "",
 		OrchestratorEnabled: true, // Enable orchestration by default
+		Checkpoint:          checkpoint.DefaultConfig(),
 	}
 }
 
@@ -70,6 +75,7 @@ type Service struct {
 	orchestrator    *Orchestrator            // prompt pre-processing
 	subCallRouter   *SubCallRouter           // routes REPL llm_call() to models
 	wrapper         *Wrapper                 // RLM wrapper for context externalization
+	checkpoint      *checkpoint.Manager      // session state persistence
 
 	// Configuration
 	config ServiceConfig
@@ -158,6 +164,9 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		BudgetLimit: config.Controller.MaxTokenBudget,
 	})
 
+	// Create checkpoint manager for session state persistence
+	checkpointMgr := checkpoint.NewManager(config.Checkpoint)
+
 	svc := &Service{
 		store:           store,
 		controller:      controller,
@@ -166,6 +175,7 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		persistentTrace: persistentTrace,
 		orchestrator:    orchestrator,
 		subCallRouter:   subCallRouter,
+		checkpoint:      checkpointMgr,
 		config:          config,
 	}
 
@@ -203,6 +213,11 @@ func (s *Service) Start(ctx context.Context) error {
 	// Start idle maintenance loop
 	s.lifecycle.StartIdleLoop(ctx)
 
+	// Start checkpoint manager for periodic saves
+	if s.checkpoint != nil {
+		s.checkpoint.Start(ctx)
+	}
+
 	return nil
 }
 
@@ -216,6 +231,13 @@ func (s *Service) Stop() error {
 	}
 
 	s.running = false
+
+	// Stop checkpoint manager and clear checkpoint on clean exit
+	if s.checkpoint != nil {
+		s.checkpoint.Stop()
+		// Clear checkpoint on normal exit (no crash recovery needed)
+		s.checkpoint.Clear()
+	}
 
 	// Stop lifecycle manager (stops idle loop)
 	if err := s.lifecycle.Close(); err != nil {
@@ -531,4 +553,83 @@ func (s *Service) SetOrchestrationEnabled(enabled bool) {
 	if s.orchestrator != nil {
 		s.orchestrator.SetEnabled(enabled)
 	}
+}
+
+// CheckpointManager returns the checkpoint manager for recovery checks.
+func (s *Service) CheckpointManager() *checkpoint.Manager {
+	return s.checkpoint
+}
+
+// LoadCheckpoint loads any existing checkpoint for recovery.
+func (s *Service) LoadCheckpoint() (*checkpoint.Checkpoint, error) {
+	if s.checkpoint == nil {
+		return nil, nil
+	}
+	return s.checkpoint.Load()
+}
+
+// SetSessionID sets the session ID for checkpoints.
+func (s *Service) SetSessionID(sessionID string) {
+	if s.checkpoint != nil {
+		s.checkpoint.SetSessionID(sessionID)
+	}
+}
+
+// UpdateCheckpoint updates the checkpoint with current service state.
+func (s *Service) UpdateCheckpoint(ctx context.Context) {
+	if s.checkpoint == nil {
+		return
+	}
+
+	s.mu.RLock()
+	stats := s.stats
+	s.mu.RUnlock()
+
+	// Update service stats
+	s.checkpoint.UpdateServiceStats(&checkpoint.ServiceStats{
+		TotalExecutions: stats.TotalExecutions,
+		TotalTokens:     stats.TotalTokens,
+		TotalDuration:   stats.TotalDuration,
+		TasksCompleted:  stats.TasksCompleted,
+		SessionsEnded:   stats.SessionsEnded,
+		Errors:          stats.Errors,
+	})
+}
+
+// UpdateCheckpointTask updates the checkpoint with task info.
+func (s *Service) UpdateCheckpointTask(taskID string, taskStarted time.Time, nodeCount, factCount, entityCount int) {
+	if s.checkpoint == nil {
+		return
+	}
+
+	s.checkpoint.UpdateTaskState(&checkpoint.TaskState{
+		TaskID:      taskID,
+		TaskStarted: taskStarted,
+		NodeCount:   nodeCount,
+		FactCount:   factCount,
+		EntityCount: entityCount,
+	})
+}
+
+// UpdateCheckpointRLM updates the checkpoint with RLM execution state.
+func (s *Service) UpdateCheckpointRLM(currentIter, maxIter int, lastTask string, replActive bool, mode string) {
+	if s.checkpoint == nil {
+		return
+	}
+
+	s.checkpoint.UpdateRLMState(&checkpoint.RLMState{
+		CurrentIteration: currentIter,
+		MaxIterations:    maxIter,
+		LastTask:         lastTask,
+		REPLActive:       replActive,
+		Mode:             mode,
+	})
+}
+
+// ClearCheckpoint removes the checkpoint file.
+func (s *Service) ClearCheckpoint() error {
+	if s.checkpoint == nil {
+		return nil
+	}
+	return s.checkpoint.Clear()
 }

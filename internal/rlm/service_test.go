@@ -10,6 +10,7 @@ import (
 
 	"github.com/rand/recurse/internal/memory/evolution"
 	"github.com/rand/recurse/internal/memory/hypergraph"
+	"github.com/rand/recurse/internal/rlm/checkpoint"
 )
 
 func TestDefaultServiceConfig(t *testing.T) {
@@ -468,4 +469,143 @@ func TestHealthStatus_Fields(t *testing.T) {
 	assert.True(t, status.Running)
 	assert.True(t, status.Healthy)
 	assert.True(t, status.Checks["store"])
+}
+
+func TestService_CheckpointManager(t *testing.T) {
+	client := &mockLLMClient{}
+	cfg := DefaultServiceConfig()
+	cfg.Checkpoint.Path = t.TempDir()
+
+	svc, err := NewService(client, cfg)
+	require.NoError(t, err)
+	defer svc.Stop()
+
+	// Checkpoint manager should be set
+	assert.NotNil(t, svc.CheckpointManager())
+}
+
+func TestService_SetSessionID(t *testing.T) {
+	client := &mockLLMClient{}
+	cfg := DefaultServiceConfig()
+	cfg.Checkpoint.Path = t.TempDir()
+
+	svc, err := NewService(client, cfg)
+	require.NoError(t, err)
+	defer svc.Stop()
+
+	svc.SetSessionID("test-session-123")
+
+	// Save and load to verify
+	require.NoError(t, svc.checkpoint.Save())
+
+	cp, err := svc.LoadCheckpoint()
+	require.NoError(t, err)
+	require.NotNil(t, cp)
+	assert.Equal(t, "test-session-123", cp.SessionID)
+}
+
+func TestService_UpdateCheckpointTask(t *testing.T) {
+	client := &mockLLMClient{}
+	cfg := DefaultServiceConfig()
+	cfg.Checkpoint.Path = t.TempDir()
+
+	svc, err := NewService(client, cfg)
+	require.NoError(t, err)
+	defer svc.Stop()
+
+	taskTime := time.Now()
+	svc.UpdateCheckpointTask("task-42", taskTime, 100, 25, 10)
+
+	// Save and load to verify
+	require.NoError(t, svc.checkpoint.Save())
+
+	cp, err := svc.LoadCheckpoint()
+	require.NoError(t, err)
+	require.NotNil(t, cp)
+	require.NotNil(t, cp.TaskState)
+
+	assert.Equal(t, "task-42", cp.TaskState.TaskID)
+	assert.Equal(t, 100, cp.TaskState.NodeCount)
+	assert.Equal(t, 25, cp.TaskState.FactCount)
+	assert.Equal(t, 10, cp.TaskState.EntityCount)
+}
+
+func TestService_UpdateCheckpointRLM(t *testing.T) {
+	client := &mockLLMClient{}
+	cfg := DefaultServiceConfig()
+	cfg.Checkpoint.Path = t.TempDir()
+
+	svc, err := NewService(client, cfg)
+	require.NoError(t, err)
+	defer svc.Stop()
+
+	svc.UpdateCheckpointRLM(3, 10, "count the words", true, "rlm")
+
+	// Save and load to verify
+	require.NoError(t, svc.checkpoint.Save())
+
+	cp, err := svc.LoadCheckpoint()
+	require.NoError(t, err)
+	require.NotNil(t, cp)
+	require.NotNil(t, cp.RLMState)
+
+	assert.Equal(t, 3, cp.RLMState.CurrentIteration)
+	assert.Equal(t, 10, cp.RLMState.MaxIterations)
+	assert.Equal(t, "count the words", cp.RLMState.LastTask)
+	assert.True(t, cp.RLMState.REPLActive)
+	assert.Equal(t, "rlm", cp.RLMState.Mode)
+}
+
+func TestService_ClearCheckpoint(t *testing.T) {
+	client := &mockLLMClient{}
+	cfg := DefaultServiceConfig()
+	cfg.Checkpoint.Path = t.TempDir()
+
+	svc, err := NewService(client, cfg)
+	require.NoError(t, err)
+	defer svc.Stop()
+
+	// Create a checkpoint
+	svc.SetSessionID("test-session")
+	require.NoError(t, svc.checkpoint.Save())
+
+	// Verify it exists
+	cp, err := svc.LoadCheckpoint()
+	require.NoError(t, err)
+	require.NotNil(t, cp)
+
+	// Clear it
+	require.NoError(t, svc.ClearCheckpoint())
+
+	// Verify it's gone
+	cp, err = svc.LoadCheckpoint()
+	require.NoError(t, err)
+	assert.Nil(t, cp)
+}
+
+func TestService_CheckpointClearedOnStop(t *testing.T) {
+	client := &mockLLMClient{}
+	cfg := DefaultServiceConfig()
+	cfg.Checkpoint.Path = t.TempDir()
+	cfg.Lifecycle.IdleInterval = 0
+
+	svc, err := NewService(client, cfg)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	require.NoError(t, svc.Start(ctx))
+
+	// Create checkpoint
+	svc.SetSessionID("test-session")
+	svc.UpdateCheckpointTask("task-1", time.Now(), 50, 10, 5)
+	require.NoError(t, svc.checkpoint.Save())
+
+	// Stop clears checkpoint (normal exit)
+	require.NoError(t, svc.Stop())
+
+	// Create new manager to check file is gone
+	mgr := checkpoint.NewManager(cfg.Checkpoint)
+	cp, err := mgr.Load()
+	require.NoError(t, err)
+	assert.Nil(t, cp, "checkpoint should be cleared on normal exit")
 }
