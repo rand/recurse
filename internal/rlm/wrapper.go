@@ -514,6 +514,11 @@ type RLMConfig struct {
 
 	// EnableProfiling enables detailed performance profiling.
 	EnableProfiling bool
+
+	// EnableEarlyTermination enables smart early termination detection.
+	// When enabled, the loop may terminate before MaxIterations if the
+	// answer is clearly determined (e.g., answer stability, simple task completion).
+	EnableEarlyTermination bool
 }
 
 // DefaultRLMConfig returns sensible defaults for RLM execution.
@@ -562,6 +567,16 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 	if cfg.EnableProfiling {
 		profile = NewRLMProfile()
 		result.Profile = profile
+	}
+
+	// Initialize termination tracker if enabled
+	var termTracker *TerminationTracker
+	if cfg.EnableEarlyTermination {
+		taskType := TaskTypeUnknown
+		if prepared.Classification != nil {
+			taskType = prepared.Classification.Type
+		}
+		termTracker = NewTerminationTracker(taskType)
 	}
 
 	// Clear any previous FINAL output
@@ -699,7 +714,42 @@ func (w *Wrapper) ExecuteRLMWithConfig(ctx context.Context, prepared *PreparedPr
 				iterProfile.HasFinal = true
 				profile.EndIteration(iterProfile)
 			}
+			result.EarlyTerminated = iteration+1 < cfg.MaxIterations
+			result.TerminationReason = "FINAL() called"
 			break
+		}
+
+		// Check for early termination (if enabled and FINAL not called)
+		if termTracker != nil {
+			iterResult := &IterationResult{
+				HasFinal:     false,
+				CodeExecuted: code,
+				REPLOutput:   execResult.Output,
+				REPLError:    execResult.Error,
+				Iteration:    iteration + 1,
+			}
+
+			termCheck := termTracker.CheckTermination(iterResult)
+			if termCheck.ShouldTerminate {
+				// Use REPL output as final answer if we're terminating early
+				if execResult.Output != "" {
+					result.FinalOutput = strings.TrimSpace(execResult.Output)
+				} else if execResult.ReturnVal != "" && execResult.ReturnVal != "None" {
+					result.FinalOutput = strings.TrimSpace(execResult.ReturnVal)
+				}
+				result.EarlyTerminated = true
+				result.TerminationReason = termCheck.Reason
+
+				if iterProfile != nil {
+					profile.EndIteration(iterProfile)
+				}
+
+				slog.Info("Early termination triggered",
+					"iteration", iteration+1,
+					"reason", termCheck.Reason,
+					"confidence", termCheck.Confidence)
+				break
+			}
 		}
 
 		// Build execution feedback for next iteration
@@ -916,6 +966,12 @@ type RLMExecutionResult struct {
 
 	// Profile contains detailed performance profiling data (if enabled).
 	Profile *RLMProfile
+
+	// EarlyTerminated indicates if the loop terminated before max iterations.
+	EarlyTerminated bool
+
+	// TerminationReason explains why the loop terminated.
+	TerminationReason string
 }
 
 // FinalOutputResult contains the result from FINAL() including metadata.
