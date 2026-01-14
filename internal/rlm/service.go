@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rand/recurse/internal/learning"
 	"github.com/rand/recurse/internal/memory/evolution"
 	"github.com/rand/recurse/internal/memory/hypergraph"
 	"github.com/rand/recurse/internal/rlm/checkpoint"
@@ -41,6 +42,12 @@ type ServiceConfig struct {
 
 	// Checkpoint configures session state persistence for crash recovery.
 	Checkpoint checkpoint.Config
+
+	// Learning configures the continuous learning engine.
+	Learning learning.EngineConfig
+
+	// LearningEnabled enables continuous learning from interactions.
+	LearningEnabled bool
 }
 
 // DefaultServiceConfig returns sensible defaults for the RLM service.
@@ -51,8 +58,10 @@ func DefaultServiceConfig() ServiceConfig {
 		Meta:                meta.DefaultConfig(),
 		MaxTraceEvents:      1000,
 		StorePath:           "",
-		OrchestratorEnabled: true, // Enable orchestration by default
+		OrchestratorEnabled: true,  // Enable orchestration by default
 		Checkpoint:          checkpoint.DefaultConfig(),
+		LearningEnabled:     true,  // Enable learning by default
+		Learning:            learning.EngineConfig{},
 	}
 }
 
@@ -76,6 +85,7 @@ type Service struct {
 	subCallRouter   *SubCallRouter           // routes REPL llm_call() to models
 	wrapper         *Wrapper                 // RLM wrapper for context externalization
 	checkpoint      *checkpoint.Manager      // session state persistence
+	learner         *learning.Engine         // continuous learning engine
 
 	// Configuration
 	config ServiceConfig
@@ -83,6 +93,7 @@ type Service struct {
 	// State
 	running   bool
 	startTime time.Time
+	sessionID string // current session ID for learning
 
 	// Statistics
 	stats ServiceStats
@@ -167,6 +178,12 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	// Create checkpoint manager for session state persistence
 	checkpointMgr := checkpoint.NewManager(config.Checkpoint)
 
+	// Create learning engine if enabled
+	var learner *learning.Engine
+	if config.LearningEnabled {
+		learner = learning.NewEngine(store, config.Learning)
+	}
+
 	svc := &Service{
 		store:           store,
 		controller:      controller,
@@ -176,6 +193,7 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		orchestrator:    orchestrator,
 		subCallRouter:   subCallRouter,
 		checkpoint:      checkpointMgr,
+		learner:         learner,
 		config:          config,
 	}
 
@@ -185,14 +203,30 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	// Wire up lifecycle callbacks for statistics
 	lifecycle.OnTaskComplete(func(result *evolution.LifecycleResult) {
 		svc.mu.Lock()
-		defer svc.mu.Unlock()
 		svc.stats.TasksCompleted++
+		svc.mu.Unlock()
+
+		// Learn from task completion
+		if svc.learner != nil && result != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			svc.learner.LearnSuccess(ctx,
+				svc.sessionID,
+				"", // taskID
+				"task completed", // query
+				"", // output
+				"", // model
+				"lifecycle", // strategy
+				"", // domain
+				0.8, // confidence
+			)
+		}
 	})
 
 	lifecycle.OnSessionEnd(func(result *evolution.LifecycleResult) {
 		svc.mu.Lock()
-		defer svc.mu.Unlock()
 		svc.stats.SessionsEnded++
+		svc.mu.Unlock()
 	})
 
 	return svc, nil
@@ -218,6 +252,11 @@ func (s *Service) Start(ctx context.Context) error {
 		s.checkpoint.Start(ctx)
 	}
 
+	// Start learning engine background consolidation
+	if s.learner != nil {
+		s.learner.Start()
+	}
+
 	return nil
 }
 
@@ -231,6 +270,11 @@ func (s *Service) Stop() error {
 	}
 
 	s.running = false
+
+	// Stop learning engine first (before closing store)
+	if s.learner != nil {
+		s.learner.Stop()
+	}
 
 	// Stop checkpoint manager and clear checkpoint on clean exit
 	if s.checkpoint != nil {
@@ -559,14 +603,33 @@ func (s *Service) SubCallStats() SubCallStats {
 
 // AnalyzePrompt performs RLM analysis on a user prompt.
 // This should be called before sending the prompt to the main agent.
+// If learning is enabled, it enhances the prompt with learned knowledge.
 func (s *Service) AnalyzePrompt(ctx context.Context, prompt string, contextTokens int) (*AnalysisResult, error) {
+	// First enhance with learned knowledge if available
+	enhancedPrompt := prompt
+	if s.learner != nil {
+		enhanced, err := s.learner.EnhancePrompt(ctx, prompt, "", "") // domain and project from context
+		if err == nil && enhanced != prompt {
+			enhancedPrompt = enhanced
+		}
+	}
+
 	if s.orchestrator == nil {
 		return &AnalysisResult{
 			OriginalPrompt: prompt,
-			EnhancedPrompt: prompt,
+			EnhancedPrompt: enhancedPrompt,
 		}, nil
 	}
-	return s.orchestrator.Analyze(ctx, prompt, contextTokens)
+
+	// Run orchestrator analysis on the enhanced prompt
+	result, err := s.orchestrator.Analyze(ctx, enhancedPrompt, contextTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	// Preserve original prompt reference
+	result.OriginalPrompt = prompt
+	return result, nil
 }
 
 // IsOrchestrationEnabled returns whether RLM orchestration is enabled.
@@ -594,8 +657,12 @@ func (s *Service) LoadCheckpoint() (*checkpoint.Checkpoint, error) {
 	return s.checkpoint.Load()
 }
 
-// SetSessionID sets the session ID for checkpoints.
+// SetSessionID sets the session ID for checkpoints and learning.
 func (s *Service) SetSessionID(sessionID string) {
+	s.mu.Lock()
+	s.sessionID = sessionID
+	s.mu.Unlock()
+
 	if s.checkpoint != nil {
 		s.checkpoint.SetSessionID(sessionID)
 	}
@@ -658,4 +725,80 @@ func (s *Service) ClearCheckpoint() error {
 		return nil
 	}
 	return s.checkpoint.Clear()
+}
+
+// Learning-related methods
+
+// LearningEngine returns the learning engine for direct access.
+func (s *Service) LearningEngine() *learning.Engine {
+	return s.learner
+}
+
+// IsLearningEnabled returns whether continuous learning is enabled.
+func (s *Service) IsLearningEnabled() bool {
+	return s.learner != nil
+}
+
+// LearnFromSuccess records a successful task execution for learning.
+func (s *Service) LearnFromSuccess(ctx context.Context, taskID, query, output, model, strategy, domain string, confidence float64) error {
+	if s.learner == nil {
+		return nil
+	}
+	s.mu.RLock()
+	sessionID := s.sessionID
+	s.mu.RUnlock()
+
+	return s.learner.LearnSuccess(ctx, sessionID, taskID, query, output, model, strategy, domain, confidence)
+}
+
+// LearnFromCorrection records a user correction for learning.
+func (s *Service) LearnFromCorrection(ctx context.Context, taskID, query, original, corrected, correctionType, explanation, domain string, severity float64) error {
+	if s.learner == nil {
+		return nil
+	}
+	s.mu.RLock()
+	sessionID := s.sessionID
+	s.mu.RUnlock()
+
+	return s.learner.LearnCorrection(ctx, sessionID, taskID, query, original, corrected, correctionType, explanation, domain, severity)
+}
+
+// LearnFromError records an error for learning (to avoid in future).
+func (s *Service) LearnFromError(ctx context.Context, taskID, query, domain string, err error) error {
+	if s.learner == nil {
+		return nil
+	}
+	s.mu.RLock()
+	sessionID := s.sessionID
+	s.mu.RUnlock()
+
+	return s.learner.LearnError(ctx, sessionID, taskID, query, domain, err)
+}
+
+// LearnPreference records a user preference.
+func (s *Service) LearnPreference(ctx context.Context, key string, value interface{}, scope learning.PreferenceScope, scopeValue string, explicit bool) error {
+	if s.learner == nil {
+		return nil
+	}
+	s.mu.RLock()
+	sessionID := s.sessionID
+	s.mu.RUnlock()
+
+	return s.learner.LearnPreference(ctx, sessionID, key, value, scope, scopeValue, explicit)
+}
+
+// GetLearnedContext retrieves learned knowledge relevant to a query.
+func (s *Service) GetLearnedContext(ctx context.Context, query, domain, projectPath string) ([]string, error) {
+	if s.learner == nil {
+		return nil, nil
+	}
+	return s.learner.GetContextEnhancements(ctx, query, domain, projectPath)
+}
+
+// LearningStats returns statistics about learned knowledge.
+func (s *Service) LearningStats(ctx context.Context) (*learning.EngineStats, error) {
+	if s.learner == nil {
+		return nil, nil
+	}
+	return s.learner.Stats(ctx)
 }
