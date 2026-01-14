@@ -21,6 +21,7 @@ type Index struct {
 	wg         sync.WaitGroup
 	mu         sync.RWMutex
 	logger     *slog.Logger
+	metrics    *EmbeddingMetrics
 }
 
 // IndexConfig configures the embedding index.
@@ -30,6 +31,7 @@ type IndexConfig struct {
 	Workers   int      // Background workers (default: 2)
 	QueueSize int      // Background queue depth (default: 1000)
 	Logger    *slog.Logger
+	Metrics   *EmbeddingMetrics // Optional: metrics collector
 }
 
 type indexRequest struct {
@@ -63,6 +65,7 @@ func NewIndex(db *sql.DB, cfg IndexConfig) (*Index, error) {
 		background: make(chan indexRequest, cfg.QueueSize),
 		done:       make(chan struct{}),
 		logger:     cfg.Logger,
+		metrics:    cfg.Metrics,
 	}
 
 	// Initialize schema
@@ -168,6 +171,13 @@ type SearchResult struct {
 
 // Search finds nodes similar to the query.
 func (idx *Index) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	start := time.Now()
+	defer func() {
+		if idx.metrics != nil {
+			idx.metrics.RecordSearch(time.Since(start))
+		}
+	}()
+
 	if limit <= 0 {
 		limit = 20
 	}
@@ -258,6 +268,11 @@ func (idx *Index) QueueDepth() int {
 	return len(idx.background)
 }
 
+// Metrics returns the metrics collector.
+func (idx *Index) Metrics() *EmbeddingMetrics {
+	return idx.metrics
+}
+
 // Close stops background workers and closes the index.
 func (idx *Index) Close() error {
 	close(idx.done)
@@ -282,9 +297,21 @@ func (idx *Index) worker() {
 			texts[i] = req.content
 		}
 
+		start := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		vectors, err := idx.provider.Embed(ctx, texts)
 		cancel()
+		duration := time.Since(start)
+
+		// Record metrics
+		if idx.metrics != nil {
+			if err != nil {
+				idx.metrics.RecordEmbedError()
+			} else {
+				idx.metrics.RecordEmbed(duration, len(texts))
+			}
+			idx.metrics.SetQueueDepth(len(idx.background))
+		}
 
 		for i, req := range batch {
 			if err != nil {

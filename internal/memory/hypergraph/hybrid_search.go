@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/rand/recurse/internal/memory/embeddings"
 )
@@ -15,18 +16,20 @@ const (
 
 // HybridSearcher combines keyword and semantic search using Reciprocal Rank Fusion.
 type HybridSearcher struct {
-	store  *Store
-	index  *embeddings.Index
-	alpha  float64 // Weight for semantic search
-	k      int     // RRF constant
-	logger *slog.Logger
+	store   *Store
+	index   *embeddings.Index
+	alpha   float64 // Weight for semantic search
+	k       int     // RRF constant
+	logger  *slog.Logger
+	metrics *embeddings.EmbeddingMetrics
 }
 
 // HybridConfig configures the hybrid searcher.
 type HybridConfig struct {
-	Alpha  float64 // Semantic weight (0=keyword only, 1=semantic only, default: 0.7)
-	K      int     // RRF constant (default: 60)
-	Logger *slog.Logger
+	Alpha   float64 // Semantic weight (0=keyword only, 1=semantic only, default: 0.7)
+	K       int     // RRF constant (default: 60)
+	Logger  *slog.Logger
+	Metrics *embeddings.EmbeddingMetrics
 }
 
 // NewHybridSearcher creates a new hybrid searcher.
@@ -42,11 +45,12 @@ func NewHybridSearcher(store *Store, index *embeddings.Index, cfg HybridConfig) 
 	}
 
 	return &HybridSearcher{
-		store:  store,
-		index:  index,
-		alpha:  cfg.Alpha,
-		k:      cfg.K,
-		logger: cfg.Logger,
+		store:   store,
+		index:   index,
+		alpha:   cfg.Alpha,
+		k:       cfg.K,
+		logger:  cfg.Logger,
+		metrics: cfg.Metrics,
 	}
 }
 
@@ -56,6 +60,13 @@ func (h *HybridSearcher) Search(
 	query string,
 	opts SearchOptions,
 ) ([]*SearchResult, error) {
+	start := time.Now()
+	defer func() {
+		if h.metrics != nil {
+			h.metrics.RecordHybridSearch(time.Since(start))
+		}
+	}()
+
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 20

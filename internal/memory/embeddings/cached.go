@@ -11,6 +11,7 @@ const defaultCacheSize = 1000
 type CachedProvider struct {
 	provider Provider
 	cache    *lruCache
+	metrics  *EmbeddingMetrics
 }
 
 // CachedProviderOption is a functional option for CachedProvider.
@@ -18,12 +19,20 @@ type CachedProviderOption func(*cachedConfig)
 
 type cachedConfig struct {
 	maxSize int
+	metrics *EmbeddingMetrics
 }
 
 // WithCacheSize sets the maximum number of cached embeddings.
 func WithCacheSize(size int) CachedProviderOption {
 	return func(c *cachedConfig) {
 		c.maxSize = size
+	}
+}
+
+// WithCacheMetrics sets the metrics collector for the cache.
+func WithCacheMetrics(metrics *EmbeddingMetrics) CachedProviderOption {
+	return func(c *cachedConfig) {
+		c.metrics = metrics
 	}
 }
 
@@ -39,6 +48,7 @@ func NewCachedProvider(provider Provider, opts ...CachedProviderOption) *CachedP
 	return &CachedProvider{
 		provider: provider,
 		cache:    newLRUCache(cfg.maxSize),
+		metrics:  cfg.metrics,
 	}
 }
 
@@ -59,6 +69,17 @@ func (p *CachedProvider) Embed(ctx context.Context, texts []string) ([]Vector, e
 		} else {
 			toEmbed = append(toEmbed, text)
 			toEmbedIdx = append(toEmbedIdx, i)
+		}
+	}
+
+	// Record cache metrics
+	cacheHits := len(texts) - len(toEmbed)
+	if p.metrics != nil {
+		if cacheHits > 0 {
+			p.metrics.RecordCacheHit(cacheHits)
+		}
+		if len(toEmbed) > 0 {
+			p.metrics.RecordCacheMiss(len(toEmbed))
 		}
 	}
 

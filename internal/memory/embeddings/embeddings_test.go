@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rand/recurse/internal/rlm/observability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -305,6 +306,51 @@ func TestIndex_GetEmbedding(t *testing.T) {
 	assert.InDelta(t, 1.0, vec[0], 0.001)
 	assert.InDelta(t, 2.0, vec[1], 0.001)
 	assert.InDelta(t, 3.0, vec[2], 0.001)
+}
+
+func TestEmbeddingMetrics(t *testing.T) {
+	registry := observability.NewRegistry()
+	metrics := NewEmbeddingMetrics(registry)
+
+	// Record some operations
+	metrics.RecordEmbed(100*time.Millisecond, 5)
+	metrics.RecordCacheHit(3)
+	metrics.RecordCacheMiss(2)
+	metrics.RecordSearch(50 * time.Millisecond)
+	metrics.RecordHybridSearch(75 * time.Millisecond)
+	metrics.SetQueueDepth(10)
+	metrics.SetIndexSize(1000)
+
+	// Check cache hit rate
+	rate := metrics.CacheHitRate()
+	assert.InDelta(t, 0.6, rate, 0.01) // 3 hits / 5 total = 0.6
+
+	// Snapshot should contain data
+	snap := metrics.Snapshot()
+	assert.NotEmpty(t, snap.Counters)
+	assert.NotEmpty(t, snap.Gauges)
+	assert.NotEmpty(t, snap.Histograms)
+}
+
+func TestCachedProvider_WithMetrics(t *testing.T) {
+	mock := newMockProvider()
+	registry := observability.NewRegistry()
+	metrics := NewEmbeddingMetrics(registry)
+	cached := NewCachedProvider(mock, WithCacheMetrics(metrics))
+
+	ctx := context.Background()
+
+	// First call - cache miss
+	_, err := cached.Embed(ctx, []string{"hello"})
+	require.NoError(t, err)
+
+	// Second call - cache hit
+	_, err = cached.Embed(ctx, []string{"hello"})
+	require.NoError(t, err)
+
+	// Check metrics recorded cache events
+	rate := metrics.CacheHitRate()
+	assert.InDelta(t, 0.5, rate, 0.01) // 1 hit, 1 miss
 }
 
 // Integration test with real Voyage API (skipped unless VOYAGE_API_KEY is set)
