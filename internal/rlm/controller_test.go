@@ -205,6 +205,32 @@ func TestQueryMemoryContext(t *testing.T) {
 	assert.GreaterOrEqual(t, len(hints), 0) // May or may not match depending on content
 }
 
+func TestQueryMemoryContext_ExcludesArchived(t *testing.T) {
+	store := createTestStore(t)
+	ctx := context.Background()
+
+	// Add an active fact
+	activeFact := hypergraph.NewNode(hypergraph.NodeTypeFact, "The system uses SQLite for storage")
+	activeFact.Confidence = 0.9
+	require.NoError(t, store.CreateNode(ctx, activeFact))
+
+	// Add an archived fact with same content (should be excluded)
+	archivedFact := hypergraph.NewNode(hypergraph.NodeTypeFact, "The system uses SQLite for storage")
+	archivedFact.Confidence = 0.9
+	archivedFact.Tier = hypergraph.TierArchive
+	require.NoError(t, store.CreateNode(ctx, archivedFact))
+
+	client := &mockLLMClient{}
+	metaCtrl := meta.NewController(client, meta.DefaultConfig())
+	ctrl := NewController(metaCtrl, client, store, DefaultControllerConfig())
+
+	hints, err := ctrl.queryMemoryContext(ctx, "Tell me about SQLite storage")
+	require.NoError(t, err)
+
+	// Should find exactly 1 hint (archived node excluded)
+	assert.Len(t, hints, 1)
+}
+
 func TestExecuteSynthesize(t *testing.T) {
 	store := createTestStore(t)
 	client := &mockLLMClient{}

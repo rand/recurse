@@ -497,9 +497,10 @@ func (c *Controller) executeSynthesize(ctx context.Context, state meta.State) (s
 
 // queryMemoryContext retrieves relevant context from memory.
 func (c *Controller) queryMemoryContext(ctx context.Context, task string) ([]string, error) {
-	// Query for relevant facts
+	// Query for relevant facts from active tiers (exclude archived)
 	nodes, err := c.store.ListNodes(ctx, hypergraph.NodeFilter{
 		Types:         []hypergraph.NodeType{hypergraph.NodeTypeFact},
+		Tiers:         []hypergraph.Tier{hypergraph.TierTask, hypergraph.TierSession, hypergraph.TierLongterm},
 		MinConfidence: 0.5,
 		Limit:         5,
 	})
