@@ -7,74 +7,30 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/rand/recurse/internal/rlm/orchestrator"
 	"github.com/rand/recurse/internal/rlm/repl"
 )
 
-// ContextLoader manages externalized context for RLM operations.
-// It loads context from various sources (files, search results, etc.)
-// into REPL variables that the LLM can manipulate via code.
-type ContextLoader struct {
-	repl *repl.Manager
+// Extended ContextLoader that wraps orchestrator.ContextLoader with additional features.
+// This provides backwards compatibility and additional helper methods.
+
+// ExtendedContextLoader manages externalized context for RLM operations with
+// additional helper methods beyond the basic orchestrator.ContextLoader.
+type ExtendedContextLoader struct {
+	repl   *repl.Manager
+	loader *orchestrator.ContextLoader
 }
 
-// NewContextLoader creates a new context loader.
-func NewContextLoader(replMgr *repl.Manager) *ContextLoader {
-	return &ContextLoader{
-		repl: replMgr,
+// NewExtendedContextLoader creates a new extended context loader.
+func NewExtendedContextLoader(replMgr *repl.Manager) *ExtendedContextLoader {
+	return &ExtendedContextLoader{
+		repl:   replMgr,
+		loader: orchestrator.NewContextLoader(replMgr),
 	}
 }
 
-// ContextSource represents a source of context to load.
-type ContextSource struct {
-	// Name is the variable name in the REPL (e.g., "file_content", "search_results")
-	Name string
-
-	// Content is the actual context content
-	Content string
-
-	// Type describes the context type for the LLM
-	Type ContextType
-
-	// Metadata contains additional information about the context
-	Metadata map[string]any
-}
-
-// ContextType describes the type of context.
-type ContextType string
-
-const (
-	ContextTypeFile         ContextType = "file"
-	ContextTypeSearchResult ContextType = "search_result"
-	ContextTypeCodeBlock    ContextType = "code_block"
-	ContextTypeConversation ContextType = "conversation"
-	ContextTypeMemory       ContextType = "memory"
-	ContextTypeCustom       ContextType = "custom"
-)
-
-// LoadedContext represents context that has been loaded into the REPL.
-type LoadedContext struct {
-	// Variables is a map of variable names to their metadata
-	Variables map[string]VariableInfo
-
-	// TotalTokens is the estimated total token count across all context
-	TotalTokens int
-
-	// Summary describes what context is available
-	Summary string
-}
-
-// VariableInfo contains metadata about a loaded context variable.
-type VariableInfo struct {
-	Name        string      `json:"name"`
-	Type        ContextType `json:"type"`
-	Length      int         `json:"length"`
-	TokenCount  int         `json:"token_count"`
-	Description string      `json:"description,omitempty"`
-	Source      string      `json:"source,omitempty"`
-}
-
 // Load loads multiple context sources into the REPL.
-func (cl *ContextLoader) Load(ctx context.Context, sources []ContextSource) (*LoadedContext, error) {
+func (cl *ExtendedContextLoader) Load(ctx context.Context, sources []ContextSource) (*LoadedContext, error) {
 	if cl.repl == nil {
 		return nil, fmt.Errorf("REPL manager not available")
 	}
@@ -95,17 +51,17 @@ func (cl *ContextLoader) Load(ctx context.Context, sources []ContextSource) (*Lo
 		}
 
 		// Calculate token estimate
-		tokenCount := estimateTokens(src.Content)
+		tokenCount := len(src.Content) / 4
 
 		// Build description
 		desc := buildDescription(src)
 
 		info := VariableInfo{
-			Name:        varName,
-			Type:        src.Type,
-			Length:      len(src.Content),
-			TokenCount:  tokenCount,
-			Description: desc,
+			Name:          varName,
+			Type:          src.Type,
+			Size:          len(src.Content),
+			TokenEstimate: tokenCount,
+			Description:   desc,
 		}
 
 		if source, ok := src.Metadata["source"].(string); ok {
@@ -118,13 +74,11 @@ func (cl *ContextLoader) Load(ctx context.Context, sources []ContextSource) (*Lo
 		summaryParts = append(summaryParts, fmt.Sprintf("%s (%s, ~%d tokens)", varName, src.Type, tokenCount))
 	}
 
-	loaded.Summary = fmt.Sprintf("Loaded %d context variables: %s", len(sources), strings.Join(summaryParts, ", "))
-
 	return loaded, nil
 }
 
 // LoadFile loads a file's content as a context variable.
-func (cl *ContextLoader) LoadFile(ctx context.Context, varName, path, content string) (*LoadedContext, error) {
+func (cl *ExtendedContextLoader) LoadFile(ctx context.Context, varName, path, content string) (*LoadedContext, error) {
 	ext := filepath.Ext(path)
 	return cl.Load(ctx, []ContextSource{{
 		Name:    varName,
@@ -139,7 +93,7 @@ func (cl *ContextLoader) LoadFile(ctx context.Context, varName, path, content st
 }
 
 // LoadSearchResults loads search results as a context variable.
-func (cl *ContextLoader) LoadSearchResults(ctx context.Context, varName, query string, results []SearchResult) (*LoadedContext, error) {
+func (cl *ExtendedContextLoader) LoadSearchResults(ctx context.Context, varName, query string, results []SearchResult) (*LoadedContext, error) {
 	// Format results as structured text
 	var sb strings.Builder
 	for i, r := range results {
@@ -154,7 +108,7 @@ func (cl *ContextLoader) LoadSearchResults(ctx context.Context, varName, query s
 	return cl.Load(ctx, []ContextSource{{
 		Name:    varName,
 		Content: sb.String(),
-		Type:    ContextTypeSearchResult,
+		Type:    ContextTypeSearch,
 		Metadata: map[string]any{
 			"query":        query,
 			"result_count": len(results),
@@ -170,7 +124,7 @@ type SearchResult struct {
 }
 
 // LoadConversation loads conversation history as context.
-func (cl *ContextLoader) LoadConversation(ctx context.Context, varName string, messages []ConversationMessage) (*LoadedContext, error) {
+func (cl *ExtendedContextLoader) LoadConversation(ctx context.Context, varName string, messages []ConversationMessage) (*LoadedContext, error) {
 	var sb strings.Builder
 	for _, msg := range messages {
 		sb.WriteString(fmt.Sprintf("[%s]: %s\n\n", msg.Role, msg.Content))
@@ -179,7 +133,7 @@ func (cl *ContextLoader) LoadConversation(ctx context.Context, varName string, m
 	return cl.Load(ctx, []ContextSource{{
 		Name:    varName,
 		Content: sb.String(),
-		Type:    ContextTypeConversation,
+		Type:    ContextTypeCustom,
 		Metadata: map[string]any{
 			"message_count": len(messages),
 		},
@@ -193,8 +147,7 @@ type ConversationMessage struct {
 }
 
 // GenerateContextPrompt generates a prompt describing available context.
-// This is used to inform the LLM about what context variables are available.
-func (cl *ContextLoader) GenerateContextPrompt(loaded *LoadedContext) string {
+func (cl *ExtendedContextLoader) GenerateContextPrompt(loaded *LoadedContext) string {
 	if loaded == nil || len(loaded.Variables) == 0 {
 		return ""
 	}
@@ -206,7 +159,7 @@ func (cl *ContextLoader) GenerateContextPrompt(loaded *LoadedContext) string {
 
 	for _, info := range loaded.Variables {
 		sb.WriteString(fmt.Sprintf("- `%s` (%s): %s\n", info.Name, info.Type, info.Description))
-		sb.WriteString(fmt.Sprintf("  - Length: %d chars, ~%d tokens\n", info.Length, info.TokenCount))
+		sb.WriteString(fmt.Sprintf("  - Length: %d chars, ~%d tokens\n", info.Size, info.TokenEstimate))
 		if info.Source != "" {
 			sb.WriteString(fmt.Sprintf("  - Source: %s\n", info.Source))
 		}
@@ -228,15 +181,14 @@ func (cl *ContextLoader) GenerateContextPrompt(loaded *LoadedContext) string {
 }
 
 // ClearContext clears all context variables from the REPL.
-func (cl *ContextLoader) ClearContext(ctx context.Context, varNames []string) error {
-	// Execute Python code to delete variables
+func (cl *ExtendedContextLoader) ClearContext(ctx context.Context, varNames []string) error {
 	deleteCode := "del " + strings.Join(varNames, ", ")
 	_, err := cl.repl.Execute(ctx, deleteCode)
 	return err
 }
 
 // GetContextInfo returns information about currently loaded context.
-func (cl *ContextLoader) GetContextInfo(ctx context.Context) ([]VariableInfo, error) {
+func (cl *ExtendedContextLoader) GetContextInfo(ctx context.Context) ([]VariableInfo, error) {
 	result, err := cl.repl.ListVars(ctx)
 	if err != nil {
 		return nil, err
@@ -245,10 +197,10 @@ func (cl *ContextLoader) GetContextInfo(ctx context.Context) ([]VariableInfo, er
 	var infos []VariableInfo
 	for _, v := range result.Variables {
 		infos = append(infos, VariableInfo{
-			Name:       v.Name,
-			Type:       ContextTypeCustom,
-			Length:     v.Length,
-			TokenCount: v.Length / 4,
+			Name:          v.Name,
+			Type:          ContextTypeCustom,
+			Size:          v.Length,
+			TokenEstimate: v.Length / 4,
 		})
 	}
 
@@ -258,7 +210,6 @@ func (cl *ContextLoader) GetContextInfo(ctx context.Context) ([]VariableInfo, er
 // Helper functions
 
 func sanitizeVarName(name string) string {
-	// Replace invalid characters with underscore
 	result := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
 			return r
@@ -266,7 +217,6 @@ func sanitizeVarName(name string) string {
 		return '_'
 	}, name)
 
-	// Ensure it doesn't start with a digit
 	if len(result) > 0 && result[0] >= '0' && result[0] <= '9' {
 		result = "_" + result
 	}
@@ -286,7 +236,7 @@ func buildDescription(src ContextSource) string {
 		}
 		return "File content"
 
-	case ContextTypeSearchResult:
+	case ContextTypeSearch:
 		if query, ok := src.Metadata["query"].(string); ok {
 			count := 0
 			if c, ok := src.Metadata["result_count"].(int); ok {
@@ -295,18 +245,6 @@ func buildDescription(src ContextSource) string {
 			return fmt.Sprintf("%d search results for '%s'", count, query)
 		}
 		return "Search results"
-
-	case ContextTypeCodeBlock:
-		if lang, ok := src.Metadata["language"].(string); ok {
-			return fmt.Sprintf("%s code block", lang)
-		}
-		return "Code block"
-
-	case ContextTypeConversation:
-		if count, ok := src.Metadata["message_count"].(int); ok {
-			return fmt.Sprintf("Conversation history (%d messages)", count)
-		}
-		return "Conversation history"
 
 	case ContextTypeMemory:
 		return "Memory context from hypergraph"
@@ -318,27 +256,27 @@ func buildDescription(src ContextSource) string {
 
 func detectLanguage(ext string) string {
 	languages := map[string]string{
-		".go":   "go",
-		".py":   "python",
-		".js":   "javascript",
-		".ts":   "typescript",
-		".rs":   "rust",
-		".java": "java",
-		".c":    "c",
-		".cpp":  "cpp",
-		".h":    "c",
-		".hpp":  "cpp",
-		".rb":   "ruby",
-		".php":  "php",
+		".go":    "go",
+		".py":    "python",
+		".js":    "javascript",
+		".ts":    "typescript",
+		".rs":    "rust",
+		".java":  "java",
+		".c":     "c",
+		".cpp":   "cpp",
+		".h":     "c",
+		".hpp":   "cpp",
+		".rb":    "ruby",
+		".php":   "php",
 		".swift": "swift",
-		".kt":   "kotlin",
-		".zig":  "zig",
-		".md":   "markdown",
-		".json": "json",
-		".yaml": "yaml",
-		".yml":  "yaml",
-		".toml": "toml",
-		".sql":  "sql",
+		".kt":    "kotlin",
+		".zig":   "zig",
+		".md":    "markdown",
+		".json":  "json",
+		".yaml":  "yaml",
+		".yml":   "yaml",
+		".toml":  "toml",
+		".sql":   "sql",
 	}
 
 	if lang, ok := languages[ext]; ok {
@@ -355,7 +293,7 @@ type ContextManifest struct {
 }
 
 // ToManifest converts LoadedContext to a JSON-serializable manifest.
-func (lc *LoadedContext) ToManifest() *ContextManifest {
+func ToManifest(lc *LoadedContext) *ContextManifest {
 	vars := make([]VariableInfo, 0, len(lc.Variables))
 	for _, v := range lc.Variables {
 		vars = append(vars, v)
@@ -363,7 +301,6 @@ func (lc *LoadedContext) ToManifest() *ContextManifest {
 	return &ContextManifest{
 		Variables:   vars,
 		TotalTokens: lc.TotalTokens,
-		Summary:     lc.Summary,
 	}
 }
 

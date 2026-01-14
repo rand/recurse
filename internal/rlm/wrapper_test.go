@@ -747,7 +747,7 @@ func TestGenerateRLMSystemPrompt_TaskTypeGuidance(t *testing.T) {
 
 	loaded := &LoadedContext{
 		Variables: map[string]VariableInfo{
-			"context": {Description: "Test context", TokenCount: 1000},
+			"context": {Description: "Test context", TokenEstimate: 1000},
 		},
 	}
 
@@ -856,7 +856,7 @@ func TestGenerateRLMSystemPrompt_EfficiencyEmphasis(t *testing.T) {
 
 	loaded := &LoadedContext{
 		Variables: map[string]VariableInfo{
-			"data": {Description: "Data", TokenCount: 500},
+			"data": {Description: "Data", TokenEstimate: 500},
 		},
 	}
 

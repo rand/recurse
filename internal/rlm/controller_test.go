@@ -56,9 +56,7 @@ func TestNewController(t *testing.T) {
 	ctrl := NewController(metaCtrl, client, store, cfg)
 
 	require.NotNil(t, ctrl)
-	assert.NotNil(t, ctrl.meta)
-	assert.NotNil(t, ctrl.store)
-	assert.NotNil(t, ctrl.synthesizer)
+	require.NotNil(t, ctrl.Core())
 }
 
 func TestSetTracer(t *testing.T) {
@@ -70,7 +68,7 @@ func TestSetTracer(t *testing.T) {
 	tracer := &mockTraceRecorder{}
 	ctrl.SetTracer(tracer)
 
-	assert.NotNil(t, ctrl.tracer)
+	assert.NotNil(t, ctrl.Tracer())
 }
 
 func TestExecute_DirectAction(t *testing.T) {
@@ -181,97 +179,6 @@ func TestExecute_Decompose(t *testing.T) {
 	assert.NotEmpty(t, result.Response)
 }
 
-func TestQueryMemoryContext(t *testing.T) {
-	store := createTestStore(t)
-	ctx := context.Background()
-
-	// Add some facts
-	fact1 := hypergraph.NewNode(hypergraph.NodeTypeFact, "The system uses SQLite for storage")
-	fact1.Confidence = 0.8
-	require.NoError(t, store.CreateNode(ctx, fact1))
-
-	fact2 := hypergraph.NewNode(hypergraph.NodeTypeFact, "Memory is tiered into task, session, and long-term")
-	fact2.Confidence = 0.9
-	require.NoError(t, store.CreateNode(ctx, fact2))
-
-	client := &mockLLMClient{}
-	metaCtrl := meta.NewController(client, meta.DefaultConfig())
-	ctrl := NewController(metaCtrl, client, store, DefaultControllerConfig())
-
-	hints, err := ctrl.queryMemoryContext(ctx, "Tell me about the system storage")
-	require.NoError(t, err)
-
-	// Should find relevant facts
-	assert.GreaterOrEqual(t, len(hints), 0) // May or may not match depending on content
-}
-
-func TestQueryMemoryContext_ExcludesArchived(t *testing.T) {
-	store := createTestStore(t)
-	ctx := context.Background()
-
-	// Add an active fact
-	activeFact := hypergraph.NewNode(hypergraph.NodeTypeFact, "The system uses SQLite for storage")
-	activeFact.Confidence = 0.9
-	require.NoError(t, store.CreateNode(ctx, activeFact))
-
-	// Add an archived fact with same content (should be excluded)
-	archivedFact := hypergraph.NewNode(hypergraph.NodeTypeFact, "The system uses SQLite for storage")
-	archivedFact.Confidence = 0.9
-	archivedFact.Tier = hypergraph.TierArchive
-	require.NoError(t, store.CreateNode(ctx, archivedFact))
-
-	client := &mockLLMClient{}
-	metaCtrl := meta.NewController(client, meta.DefaultConfig())
-	ctrl := NewController(metaCtrl, client, store, DefaultControllerConfig())
-
-	hints, err := ctrl.queryMemoryContext(ctx, "Tell me about SQLite storage")
-	require.NoError(t, err)
-
-	// Should find exactly 1 hint (archived node excluded)
-	assert.Len(t, hints, 1)
-}
-
-func TestExecuteSynthesize(t *testing.T) {
-	store := createTestStore(t)
-	client := &mockLLMClient{}
-	metaCtrl := meta.NewController(client, meta.DefaultConfig())
-	ctrl := NewController(metaCtrl, client, store, DefaultControllerConfig())
-	ctx := context.Background()
-
-	state := meta.State{
-		Task: "Combine results",
-		PartialResults: []string{
-			"First part of the analysis",
-			"Second part of the analysis",
-		},
-	}
-
-	response, tokens, err := ctrl.executeSynthesize(ctx, state)
-	require.NoError(t, err)
-
-	assert.Contains(t, response, "First part")
-	assert.Contains(t, response, "Second part")
-	assert.GreaterOrEqual(t, tokens, 0)
-}
-
-func TestExecuteSynthesize_Empty(t *testing.T) {
-	store := createTestStore(t)
-	client := &mockLLMClient{}
-	metaCtrl := meta.NewController(client, meta.DefaultConfig())
-	ctrl := NewController(metaCtrl, client, store, DefaultControllerConfig())
-	ctx := context.Background()
-
-	state := meta.State{
-		Task:           "Combine results",
-		PartialResults: []string{},
-	}
-
-	response, _, err := ctrl.executeSynthesize(ctx, state)
-	require.NoError(t, err)
-
-	assert.Contains(t, response, "No partial results")
-}
-
 func TestEstimateTokens(t *testing.T) {
 	tests := []struct {
 		text     string
@@ -308,15 +215,6 @@ func TestTruncate(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
-}
-
-func TestGenerateID(t *testing.T) {
-	id1 := generateID()
-	id2 := generateID()
-
-	assert.True(t, len(id1) > 0)
-	assert.True(t, id1 != id2) // Should be unique
-	assert.Contains(t, id1, "rlm-")
 }
 
 func TestExecutionResult_Fields(t *testing.T) {

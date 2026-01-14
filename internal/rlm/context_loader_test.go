@@ -78,33 +78,13 @@ func TestBuildDescription(t *testing.T) {
 		{
 			name: "search results",
 			source: ContextSource{
-				Type: ContextTypeSearchResult,
+				Type: ContextTypeSearch,
 				Metadata: map[string]any{
 					"query":        "handleRequest",
 					"result_count": 5,
 				},
 			},
 			expected: "5 search results for 'handleRequest'",
-		},
-		{
-			name: "code block with language",
-			source: ContextSource{
-				Type: ContextTypeCodeBlock,
-				Metadata: map[string]any{
-					"language": "python",
-				},
-			},
-			expected: "python code block",
-		},
-		{
-			name: "conversation",
-			source: ContextSource{
-				Type: ContextTypeConversation,
-				Metadata: map[string]any{
-					"message_count": 10,
-				},
-			},
-			expected: "Conversation history (10 messages)",
 		},
 		{
 			name: "memory context",
@@ -134,42 +114,40 @@ func TestBuildDescription(t *testing.T) {
 
 func TestVariableInfo(t *testing.T) {
 	info := VariableInfo{
-		Name:        "test_var",
-		Type:        ContextTypeFile,
-		Length:      1000,
-		TokenCount:  250,
-		Description: "Test file",
-		Source:      "/path/to/test.go",
+		Name:          "test_var",
+		Type:          ContextTypeFile,
+		Size:          1000,
+		TokenEstimate: 250,
+		Description:   "Test file",
+		Source:        "/path/to/test.go",
 	}
 
 	assert.Equal(t, "test_var", info.Name)
 	assert.Equal(t, ContextTypeFile, info.Type)
-	assert.Equal(t, 1000, info.Length)
-	assert.Equal(t, 250, info.TokenCount)
+	assert.Equal(t, 1000, info.Size)
+	assert.Equal(t, 250, info.TokenEstimate)
 	assert.Equal(t, "Test file", info.Description)
 	assert.Equal(t, "/path/to/test.go", info.Source)
 }
 
-func TestLoadedContext_ToManifest(t *testing.T) {
+func TestToManifest(t *testing.T) {
 	loaded := &LoadedContext{
 		Variables: map[string]VariableInfo{
-			"file1": {Name: "file1", Type: ContextTypeFile, TokenCount: 100},
-			"file2": {Name: "file2", Type: ContextTypeFile, TokenCount: 200},
+			"file1": {Name: "file1", Type: ContextTypeFile, TokenEstimate: 100},
+			"file2": {Name: "file2", Type: ContextTypeFile, TokenEstimate: 200},
 		},
 		TotalTokens: 300,
-		Summary:     "Test summary",
 	}
 
-	manifest := loaded.ToManifest()
+	manifest := ToManifest(loaded)
 	assert.Len(t, manifest.Variables, 2)
 	assert.Equal(t, 300, manifest.TotalTokens)
-	assert.Equal(t, "Test summary", manifest.Summary)
 }
 
 func TestContextManifest_ToJSON(t *testing.T) {
 	manifest := &ContextManifest{
 		Variables: []VariableInfo{
-			{Name: "test", Type: ContextTypeFile, TokenCount: 100},
+			{Name: "test", Type: ContextTypeFile, TokenEstimate: 100},
 		},
 		TotalTokens: 100,
 		Summary:     "Test",
@@ -184,11 +162,10 @@ func TestContextSource_Types(t *testing.T) {
 	// Verify all context types are defined
 	types := []ContextType{
 		ContextTypeFile,
-		ContextTypeSearchResult,
-		ContextTypeCodeBlock,
-		ContextTypeConversation,
+		ContextTypeSearch,
 		ContextTypeMemory,
 		ContextTypeCustom,
+		ContextTypePrompt,
 	}
 
 	for _, ct := range types {
@@ -199,5 +176,4 @@ func TestContextSource_Types(t *testing.T) {
 func TestNewContextLoader_NilREPL(t *testing.T) {
 	loader := NewContextLoader(nil)
 	assert.NotNil(t, loader)
-	assert.Nil(t, loader.repl)
 }

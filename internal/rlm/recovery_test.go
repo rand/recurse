@@ -25,9 +25,9 @@ func TestNewRecoveryManager(t *testing.T) {
 	mgr := NewRecoveryManager(cfg)
 
 	require.NotNil(t, mgr)
-	assert.Equal(t, cfg.MaxRetries, mgr.config.MaxRetries)
-	assert.Equal(t, 0, mgr.retryCount)
-	assert.Empty(t, mgr.errorHistory)
+	assert.Equal(t, cfg.MaxRetries, mgr.Config().MaxRetries)
+	assert.Equal(t, 0, mgr.RetryCount())
+	assert.Empty(t, mgr.ErrorHistory())
 }
 
 func TestRecoveryManager_ClassifyError_Nil(t *testing.T) {
@@ -153,7 +153,7 @@ func TestRecoveryManager_DetermineAction_Retryable(t *testing.T) {
 func TestRecoveryManager_DetermineAction_RetryExhausted(t *testing.T) {
 	cfg := DefaultRecoveryConfig()
 	mgr := NewRecoveryManager(cfg)
-	mgr.retryCount = cfg.MaxRetries // Already at max
+	mgr.SetRetryCount(cfg.MaxRetries) // Already at max
 
 	err := errors.New("syntax error in code")
 	action := mgr.DetermineAction(err, meta.ActionDirect, meta.State{})
@@ -167,7 +167,7 @@ func TestRecoveryManager_DetermineAction_RetryExhausted_NoDegradation(t *testing
 	cfg := DefaultRecoveryConfig()
 	cfg.EnableDegradation = false
 	mgr := NewRecoveryManager(cfg)
-	mgr.retryCount = cfg.MaxRetries
+	mgr.SetRetryCount(cfg.MaxRetries)
 
 	err := errors.New("syntax error in code")
 	action := mgr.DetermineAction(err, meta.ActionDirect, meta.State{})
@@ -214,7 +214,7 @@ func TestRecoveryManager_DetermineAction_Timeout(t *testing.T) {
 func TestRecoveryManager_DetermineAction_TimeoutExhausted(t *testing.T) {
 	cfg := DefaultRecoveryConfig()
 	mgr := NewRecoveryManager(cfg)
-	mgr.retryCount = cfg.MaxRetries
+	mgr.SetRetryCount(cfg.MaxRetries)
 
 	action := mgr.DetermineAction(context.DeadlineExceeded, meta.ActionDirect, meta.State{})
 
@@ -333,50 +333,8 @@ func TestRecoveryManager_HistoryBounding(t *testing.T) {
 	assert.LessOrEqual(t, len(history), 1000)
 }
 
-func TestBuildRetryPrompt(t *testing.T) {
-	mgr := NewRecoveryManager(DefaultRecoveryConfig())
-
-	tests := []struct {
-		name     string
-		err      error
-		contains string
-	}{
-		{"syntax error", errors.New("SyntaxError: invalid syntax"), "syntax error"},
-		{"name error", errors.New("NameError: name 'x'"), "variable was not defined"},
-		{"type error", errors.New("TypeError: unsupported"), "type error occurred"},
-		{"timeout", errors.New("timeout exceeded"), "timed out"},
-		{"memory", errors.New("memory limit reached"), "smaller chunks"},
-		{"generic", errors.New("something failed"), "Previous attempt failed"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			prompt := mgr.buildRetryPrompt(tt.err, meta.ActionDirect)
-			assert.Contains(t, prompt, "RECOVERY CONTEXT")
-			assert.Contains(t, prompt, tt.contains)
-		})
-	}
-}
-
-func TestTruncateError(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		max      int
-		expected string
-	}{
-		{"short", "short error", 20, "short error"},
-		{"exact", "12345", 5, "12345"},
-		{"long", "this is a very long error message", 10, "this is..."},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := truncateError(tt.input, tt.max)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
+// Tests for buildRetryPrompt and truncateError removed - they test internal methods
+// that are now in the orchestrator package.
 
 func TestRecoverableError(t *testing.T) {
 	original := errors.New("original error")

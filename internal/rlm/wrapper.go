@@ -574,7 +574,7 @@ Context has been externalized to Python variables. Use code execution to process
 
 	if loaded != nil {
 		for name, info := range loaded.Variables {
-			sb.WriteString(fmt.Sprintf("- %s: %s (~%d tokens)\n", name, info.Description, info.TokenCount))
+			sb.WriteString(fmt.Sprintf("- %s: %s (~%d tokens)\n", name, info.Description, info.TokenEstimate))
 		}
 	}
 
