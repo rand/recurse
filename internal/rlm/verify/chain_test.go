@@ -575,3 +575,455 @@ func TestCounterExample_Fields(t *testing.T) {
 	assert.Equal(t, 10, ce.Variables["y"])
 	assert.Contains(t, ce.Explanation, "x must be positive")
 }
+
+// =============================================================================
+// Integration Tests
+// =============================================================================
+
+func TestVerificationChain_VerifyChange_WithConstraints(t *testing.T) {
+	chain := NewVerificationChain(nil)
+	ctx := context.Background()
+
+	// Code with extractable constraints but no REPL
+	code := `
+def calculate(x: int, y: int) -> int:
+    """
+    Calculate the sum of two positive numbers.
+
+    @requires x must be positive
+    @requires y must be positive
+    @ensures result is non-negative
+    """
+    assert x > 0
+    assert y > 0
+    return x + y
+`
+
+	change := CodeChange{
+		After:    code,
+		Language: "python",
+	}
+
+	// Without REPL, verify should fail
+	_, err := chain.VerifyChange(ctx, change)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "REPL manager not configured")
+}
+
+func TestVerificationChain_ComplexConstraintExtraction(t *testing.T) {
+	chain := NewVerificationChain(nil)
+	ctx := context.Background()
+
+	code := `
+def process_data(items: list, threshold: float, max_count: int) -> dict:
+    """
+    Process items that meet the threshold.
+
+    @requires threshold must be in range [0, 1]
+    @requires max_count must be positive
+    @requires items is non-negative
+    @ensures result is non-negative
+    @invariant processed_count must be less than max_count
+    """
+    processed_count = 0
+    results = {}
+
+    for item in items:
+        if item > threshold and processed_count < max_count:
+            results[item] = True
+            processed_count += 1
+
+    return results
+`
+
+	change := CodeChange{
+		After:    code,
+		Language: "python",
+	}
+
+	// Extract all constraint types
+	pre, err := chain.GeneratePreconditions(ctx, change)
+	require.NoError(t, err)
+
+	post, err := chain.GeneratePostconditions(ctx, change)
+	require.NoError(t, err)
+
+	inv, err := chain.GenerateInvariants(ctx, change)
+	require.NoError(t, err)
+
+	// Should have constraints from all sources
+	assert.NotEmpty(t, pre, "should have preconditions")
+	assert.NotEmpty(t, post, "should have postconditions")
+	assert.NotEmpty(t, inv, "should have invariants")
+
+	// Check specific constraints
+	var foundRange, foundPositive bool
+	for _, c := range pre {
+		if c.Description == "threshold must be in range [0, 1]" {
+			foundRange = true
+		}
+		if c.Description == "max_count must be positive" {
+			foundPositive = true
+		}
+	}
+	assert.True(t, foundRange, "should find range constraint")
+	assert.True(t, foundPositive, "should find positive constraint")
+}
+
+func TestVerificationChain_GoCodeConstraints(t *testing.T) {
+	chain := NewVerificationChain(nil)
+	ctx := context.Background()
+
+	code := `
+// ValidateInput checks if the input is valid.
+// @requires value must be positive
+// @ensures result is non-negative
+func ValidateInput(value int, name string, enabled bool) (int, error) {
+    if value <= 0 {
+        panic("value must be positive")
+    }
+    return value * 2, nil
+}
+`
+
+	change := CodeChange{
+		After:    code,
+		Language: "go",
+	}
+
+	pre, err := chain.GeneratePreconditions(ctx, change)
+	require.NoError(t, err)
+
+	// Should extract Go type constraints
+	var foundIntType, foundStringType, foundBoolType bool
+	for _, c := range pre {
+		if c.Type == ConstraintTypeTypeCheck {
+			switch {
+			case c.Name == "type_value":
+				foundIntType = true
+			case c.Name == "type_name":
+				foundStringType = true
+			case c.Name == "type_enabled":
+				foundBoolType = true
+			}
+		}
+	}
+	assert.True(t, foundIntType, "should find int type constraint")
+	assert.True(t, foundStringType, "should find string type constraint")
+	assert.True(t, foundBoolType, "should find bool type constraint")
+}
+
+func TestVerificationChain_ParseVerificationResult_Success(t *testing.T) {
+	chain := NewVerificationChain(nil)
+
+	constraints := []Constraint{
+		{Name: "c1", Type: ConstraintTypePrecondition},
+		{Name: "c2", Type: ConstraintTypePostcondition},
+	}
+
+	jsonResult := `{
+		"satisfied": true,
+		"status": "satisfied",
+		"constraints": [
+			{"index": 0, "name": "c1", "type": "precondition", "added": true, "error": null},
+			{"index": 1, "name": "c2", "type": "postcondition", "added": true, "error": null}
+		],
+		"counter_example": null
+	}`
+
+	result := &VerificationResult{}
+	parsed, err := chain.parseVerificationResult(jsonResult, constraints, result)
+	require.NoError(t, err)
+
+	assert.True(t, parsed.Satisfied)
+	assert.Equal(t, StatusSatisfied, parsed.Status)
+	assert.Len(t, parsed.CheckedConstraints, 2)
+	assert.Nil(t, parsed.CounterExample)
+}
+
+func TestVerificationChain_ParseVerificationResult_Failure(t *testing.T) {
+	chain := NewVerificationChain(nil)
+
+	constraints := []Constraint{
+		{Name: "c1", Type: ConstraintTypePrecondition},
+	}
+
+	jsonResult := `{
+		"satisfied": false,
+		"status": "violated",
+		"constraints": [
+			{"index": 0, "name": "c1", "type": "precondition", "added": true, "error": null}
+		],
+		"counter_example": {
+			"variables": {"x": "-5"},
+			"explanation": "x must be positive but was -5"
+		}
+	}`
+
+	result := &VerificationResult{}
+	parsed, err := chain.parseVerificationResult(jsonResult, constraints, result)
+	require.NoError(t, err)
+
+	assert.False(t, parsed.Satisfied)
+	assert.Equal(t, StatusViolated, parsed.Status)
+	assert.NotNil(t, parsed.CounterExample)
+	assert.Equal(t, "-5", parsed.CounterExample.Variables["x"])
+}
+
+func TestVerificationChain_ParseVerificationResult_InvalidJSON(t *testing.T) {
+	chain := NewVerificationChain(nil)
+
+	constraints := []Constraint{}
+	jsonResult := `not valid json`
+
+	result := &VerificationResult{}
+	parsed, err := chain.parseVerificationResult(jsonResult, constraints, result)
+	require.NoError(t, err) // Should not error, just return unknown status
+
+	assert.Equal(t, StatusUnknown, parsed.Status)
+}
+
+func TestVerificationChain_BuildVerificationCode_MultipleConstraints(t *testing.T) {
+	chain := NewVerificationChain(nil)
+
+	constraints := []Constraint{
+		{
+			Type:       ConstraintTypePrecondition,
+			Name:       "x_positive",
+			Expression: "variables['x'] > 0",
+			Variables:  []string{"x"},
+		},
+		{
+			Type:       ConstraintTypePrecondition,
+			Name:       "y_non_negative",
+			Expression: "variables['y'] >= 0",
+			Variables:  []string{"y"},
+		},
+		{
+			Type:       ConstraintTypePostcondition,
+			Name:       "result_valid",
+			Expression: "variables['result'] == variables['x'] + variables['y']",
+			Variables:  []string{"result", "x", "y"},
+		},
+	}
+
+	code := chain.buildVerificationCode(constraints, "")
+
+	// Check all variables are declared
+	assert.Contains(t, code, "variables['x']")
+	assert.Contains(t, code, "variables['y']")
+	assert.Contains(t, code, "variables['result']")
+
+	// Check all constraints are added
+	assert.Contains(t, code, "constraint_0")
+	assert.Contains(t, code, "constraint_1")
+	assert.Contains(t, code, "constraint_2")
+
+	// Check constraint names are tracked
+	assert.Contains(t, code, `'name': "x_positive"`)
+	assert.Contains(t, code, `'name': "y_non_negative"`)
+	assert.Contains(t, code, `'name': "result_valid"`)
+}
+
+func TestVerificationChain_BuildVerificationCode_EmptyConstraints(t *testing.T) {
+	chain := NewVerificationChain(nil)
+
+	code := chain.buildVerificationCode([]Constraint{}, "")
+
+	// Should still have basic structure
+	assert.Contains(t, code, "from cpmpy import")
+	assert.Contains(t, code, "model = Model()")
+	assert.Contains(t, code, "model.solve()")
+	assert.Contains(t, code, "json.dumps(result)")
+}
+
+// =============================================================================
+// Property-Based Tests
+// =============================================================================
+
+func TestProperty_ConstraintExtractionDeterministic(t *testing.T) {
+	chain := NewVerificationChain(nil)
+	ctx := context.Background()
+
+	code := `
+def foo(x: int) -> int:
+    """
+    @requires x must be positive
+    @ensures result is non-negative
+    """
+    return x * 2
+`
+
+	change := CodeChange{After: code, Language: "python"}
+
+	// Run extraction multiple times
+	var results [][]Constraint
+	for i := 0; i < 5; i++ {
+		pre, err := chain.GeneratePreconditions(ctx, change)
+		require.NoError(t, err)
+		results = append(results, pre)
+	}
+
+	// All results should be identical
+	for i := 1; i < len(results); i++ {
+		assert.Equal(t, len(results[0]), len(results[i]),
+			"constraint count should be deterministic")
+		for j := range results[0] {
+			assert.Equal(t, results[0][j].Expression, results[i][j].Expression,
+				"constraint expressions should be deterministic")
+		}
+	}
+}
+
+func TestProperty_NaturalToConstraintIdempotent(t *testing.T) {
+	chain := NewVerificationChain(nil)
+
+	naturalPhrases := []string{
+		"x must be positive",
+		"y is non-negative",
+		"count must be greater than 0",
+		"value must be in range [0, 100]",
+	}
+
+	for _, phrase := range naturalPhrases {
+		result1 := chain.naturalToConstraint(phrase)
+		result2 := chain.naturalToConstraint(phrase)
+		assert.Equal(t, result1, result2,
+			"naturalToConstraint should be idempotent for: %s", phrase)
+	}
+}
+
+func TestProperty_ExtractVariablesNoDuplicates(t *testing.T) {
+	chain := NewVerificationChain(nil)
+
+	expressions := []string{
+		"variables['x'] > 0 and variables['x'] < 100",
+		"variables['a'] + variables['b'] == variables['a'] * 2",
+		"x > y and y > z and z > x",
+	}
+
+	for _, expr := range expressions {
+		vars := chain.extractVariables(expr)
+
+		// Check for duplicates
+		seen := make(map[string]bool)
+		for _, v := range vars {
+			assert.False(t, seen[v], "variable %s should not be duplicated in expression: %s", v, expr)
+			seen[v] = true
+		}
+	}
+}
+
+func TestProperty_TypeConstraintsAlwaysHighConfidence(t *testing.T) {
+	chain := NewVerificationChain(nil)
+
+	pythonCode := `
+def foo(a: int, b: float, c: bool, d: str):
+    pass
+`
+	goCode := `
+func bar(a int, b float64, c bool, d string) {
+}
+`
+
+	pyConstraints := chain.extractTypeConstraints(pythonCode, "python")
+	goConstraints := chain.extractTypeConstraints(goCode, "go")
+
+	for _, c := range pyConstraints {
+		assert.GreaterOrEqual(t, c.Confidence, 0.9,
+			"Python type constraints should have high confidence")
+	}
+
+	for _, c := range goConstraints {
+		assert.GreaterOrEqual(t, c.Confidence, 0.9,
+			"Go type constraints should have high confidence")
+	}
+}
+
+func TestProperty_AllConstraintTypesHaveValidExpression(t *testing.T) {
+	chain := NewVerificationChain(nil)
+	ctx := context.Background()
+
+	code := `
+def process(x: int) -> int:
+    """
+    @requires x must be positive
+    @ensures result is non-negative
+    @invariant state must be valid
+    """
+    assert x > 0
+    return x * 2
+`
+
+	change := CodeChange{After: code, Language: "python"}
+
+	pre, _ := chain.GeneratePreconditions(ctx, change)
+	post, _ := chain.GeneratePostconditions(ctx, change)
+	inv, _ := chain.GenerateInvariants(ctx, change)
+
+	allConstraints := append(append(pre, post...), inv...)
+
+	for _, c := range allConstraints {
+		assert.NotEmpty(t, c.Expression,
+			"constraint %s should have non-empty expression", c.Name)
+		assert.NotEmpty(t, c.Type,
+			"constraint %s should have non-empty type", c.Name)
+	}
+}
+
+// =============================================================================
+// Benchmarks
+// =============================================================================
+
+func BenchmarkVerificationChain_ExtractPreconditions(b *testing.B) {
+	chain := NewVerificationChain(nil)
+	ctx := context.Background()
+
+	code := `
+def calculate(x: int, y: float, flag: bool) -> int:
+    """
+    @requires x must be positive
+    @requires y must be non-negative
+    @requires flag is True
+    """
+    assert x > 0
+    assert y >= 0
+    return int(x * y) if flag else 0
+`
+	change := CodeChange{After: code, Language: "python"}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = chain.GeneratePreconditions(ctx, change)
+	}
+}
+
+func BenchmarkVerificationChain_NaturalToConstraint(b *testing.B) {
+	chain := NewVerificationChain(nil)
+	phrases := []string{
+		"x must be positive",
+		"y is non-negative",
+		"count must be greater than limit",
+		"value must be in range [0, 100]",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		phrase := phrases[i%len(phrases)]
+		_ = chain.naturalToConstraint(phrase)
+	}
+}
+
+func BenchmarkVerificationChain_BuildVerificationCode(b *testing.B) {
+	chain := NewVerificationChain(nil)
+	constraints := []Constraint{
+		{Name: "c1", Expression: "variables['x'] > 0", Variables: []string{"x"}},
+		{Name: "c2", Expression: "variables['y'] >= 0", Variables: []string{"y"}},
+		{Name: "c3", Expression: "variables['z'] < 100", Variables: []string{"z"}},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = chain.buildVerificationCode(constraints, "")
+	}
+}
