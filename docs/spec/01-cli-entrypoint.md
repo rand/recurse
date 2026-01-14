@@ -1,5 +1,7 @@
 # SPEC-01: CLI Entry Point
 
+**Status: COMPLETE**
+
 > Wire up the `recurse` command to integrate all subsystems into a usable CLI.
 
 ## Overview
@@ -8,9 +10,14 @@ The CLI entry point connects all implemented subsystems (RLM orchestration, hype
 
 ## Current State
 
-- `cmd/recurse/main.go` exists but needs integration
-- All subsystems implemented in `internal/`
-- No unified initialization or configuration loading
+**Implemented:**
+- `cmd/recurse/main.go` - CLI entrypoint
+- `internal/cmd/root.go` - Root command with all flags
+- `internal/cmd/memory.go` - Memory subcommands (search, stats, gc, export)
+- `internal/cmd/config.go` - Config subcommands (show, edit, validate, path)
+- `internal/config/` - Configuration loading with merging logic
+- Integration tests in `internal/cmd/*_test.go`
+- Documentation in `docs/user/configuration.md`
 
 ## Requirements
 
@@ -107,13 +114,14 @@ recurse config validate         Validate configuration
 
 ## Implementation Tasks
 
-- [ ] Create config package with loading/merging logic
-- [ ] Wire up initialization sequence in main.go
-- [ ] Add graceful shutdown handling
-- [ ] Implement memory subcommand
-- [ ] Implement config subcommand
-- [ ] Add --debug flag with structured logging
-- [ ] Write integration tests
+- [x] Create config package with loading/merging logic
+- [x] Wire up initialization sequence in main.go
+- [x] Add graceful shutdown handling
+- [x] Implement memory subcommand
+- [x] Implement config subcommand
+- [x] Add --debug flag with structured logging
+- [x] Write integration tests
+- [x] Document configuration schema and environment variables
 
 ## Dependencies
 
