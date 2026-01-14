@@ -84,6 +84,7 @@ type (
 	OpenRLMTraceDialogMsg    struct{}
 	OpenMemoryDialogMsg      struct{}
 	OpenREPLOutputDialogMsg  struct{}
+	OpenPanelViewMsg         struct{}
 	CompactMsg             struct {
 		SessionID string
 	}
@@ -465,6 +466,17 @@ func (c *commandDialogCmp) defaultCommands() []Command {
 		Description: "View Python REPL execution history",
 		Handler: func(cmd Command) tea.Cmd {
 			return util.CmdHandler(OpenREPLOutputDialogMsg{})
+		},
+	})
+
+	// Add Panel View command
+	commands = append(commands, Command{
+		ID:          "panel_view",
+		Title:       "Panel View",
+		Shortcut:    "ctrl+e",
+		Description: "Open tabbed panel view (Trace, Memory, REPL)",
+		Handler: func(cmd Command) tea.Cmd {
+			return util.CmdHandler(OpenPanelViewMsg{})
 		},
 	})
 

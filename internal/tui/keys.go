@@ -14,6 +14,7 @@ type KeyMap struct {
 	RLMTrace   key.Binding
 	Memory     key.Binding
 	REPLOutput key.Binding
+	PanelView  key.Binding
 
 	pageBindings []key.Binding
 }
@@ -55,6 +56,10 @@ func DefaultKeyMap() KeyMap {
 		REPLOutput: key.NewBinding(
 			key.WithKeys("ctrl+r"),
 			key.WithHelp("ctrl+r", "repl"),
+		),
+		PanelView: key.NewBinding(
+			key.WithKeys("ctrl+e"),
+			key.WithHelp("ctrl+e", "panels"),
 		),
 	}
 }

@@ -32,8 +32,10 @@ import (
 	"github.com/rand/recurse/internal/tui/components/dialogs/permissions"
 	"github.com/rand/recurse/internal/tui/components/dialogs/quit"
 	"github.com/rand/recurse/internal/tui/components/dialogs/memory"
+	"github.com/rand/recurse/internal/tui/components/dialogs/panelview"
 	"github.com/rand/recurse/internal/tui/components/dialogs/reploutput"
 	"github.com/rand/recurse/internal/tui/components/dialogs/rlmtrace"
+	"github.com/rand/recurse/internal/tui/components/core/panels"
 	"github.com/rand/recurse/internal/tui/components/dialogs/sessions"
 	"github.com/rand/recurse/internal/tui/page"
 	"github.com/rand/recurse/internal/tui/page/chat"
@@ -342,6 +344,14 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, util.CmdHandler(dialogs.OpenDialogMsg{
 			Model: reploutput.NewREPLOutputDialog(a.app.REPLHistory),
 		})
+	// Panel View
+	case commands.OpenPanelViewMsg:
+		if a.dialog.ActiveDialogID() == panelview.PanelViewDialogID {
+			return a, util.CmdHandler(dialogs.CloseDialogMsg{})
+		}
+		return a, util.CmdHandler(dialogs.OpenDialogMsg{
+			Model: a.createPanelView(),
+		})
 	// Permissions
 	case pubsub.Event[permission.PermissionNotification]:
 		item, ok := a.pages[a.currentPage]
@@ -623,6 +633,16 @@ func (a *appModel) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 		return util.CmdHandler(dialogs.OpenDialogMsg{
 			Model: reploutput.NewREPLOutputDialog(a.app.REPLHistory),
 		})
+	case key.Matches(msg, a.keyMap.PanelView):
+		if a.dialog.ActiveDialogID() == panelview.PanelViewDialogID {
+			return util.CmdHandler(dialogs.CloseDialogMsg{})
+		}
+		if a.dialog.HasDialogs() {
+			return nil
+		}
+		return util.CmdHandler(dialogs.OpenDialogMsg{
+			Model: a.createPanelView(),
+		})
 	case key.Matches(msg, a.keyMap.Suspend):
 		if a.app.AgentCoordinator != nil && a.app.AgentCoordinator.IsBusy() {
 			return util.ReportWarn("Agent is busy, please wait...")
@@ -761,6 +781,43 @@ func handleMCPToolsEvent(ctx context.Context, name string) tea.Cmd {
 		mcp.RefreshTools(ctx, name)
 		return nil
 	}
+}
+
+// createPanelView creates a panel view dialog with available panels.
+func (a *appModel) createPanelView() panelview.PanelViewDialog {
+	var panelList []panels.Panel
+
+	// Add RLM Trace panel if available
+	if a.app.RLM != nil {
+		panelList = append(panelList, panels.Panel{
+			ID:       panels.PanelID(rlmtrace.RLMTraceDialogID),
+			Title:    "RLM Trace",
+			Shortcut: "Ctrl+T",
+			Content:  rlmtrace.NewTraceDialog(a.app.RLM.TraceProvider()),
+		})
+	}
+
+	// Add Memory Inspector panel if available
+	if a.app.MemoryStore != nil {
+		panelList = append(panelList, panels.Panel{
+			ID:       panels.PanelID(memory.MemoryDialogID),
+			Title:    "Memory",
+			Shortcut: "Ctrl+B",
+			Content:  memory.NewMemoryDialog(a.app.MemoryStore),
+		})
+	}
+
+	// Add REPL Output panel if available
+	if a.app.REPLHistory != nil {
+		panelList = append(panelList, panels.Panel{
+			ID:       panels.PanelID(reploutput.REPLOutputDialogID),
+			Title:    "REPL",
+			Shortcut: "Ctrl+R",
+			Content:  reploutput.NewREPLOutputDialog(a.app.REPLHistory),
+		})
+	}
+
+	return panelview.NewPanelViewDialog(panelList)
 }
 
 // New creates and initializes a new TUI application model.
