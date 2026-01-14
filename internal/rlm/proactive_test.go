@@ -417,3 +417,71 @@ func TestComputationAdvisor_BestMatchSelection(t *testing.T) {
 	// or whichever has higher contextual relevance
 	assert.Contains(t, []string{"count_occurrences", "sum_values"}, suggestion.Pattern)
 }
+
+// =============================================================================
+// Benchmarks
+// =============================================================================
+
+func BenchmarkComputationAdvisor_SuggestREPL(b *testing.B) {
+	advisor := NewComputationAdvisor()
+	queries := []string{
+		"How many times does 'error' appear in the log?",
+		"What is the total sales amount?",
+		"Sort items by date",
+		"Filter records where value is greater than 100",
+		"Group the results by category",
+		"What is the most common word?",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		query := queries[i%len(queries)]
+		_ = advisor.SuggestREPL(query, nil)
+	}
+}
+
+func BenchmarkComputationAdvisor_SuggestREPL_WithContext(b *testing.B) {
+	advisor := NewComputationAdvisor()
+	contexts := []ContextSource{
+		{
+			Type:    ContextTypeFile,
+			Name:    "data.txt",
+			Content: "Q1: $100, Q2: $200, Q3: $150. Revenue: $45000. Items: 1000.",
+		},
+	}
+	query := "How many dollar amounts appear in the data?"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = advisor.SuggestREPL(query, contexts)
+	}
+}
+
+func BenchmarkComputationAdvisor_PatternMatching(b *testing.B) {
+	advisor := NewComputationAdvisor()
+
+	// Test pattern matching performance across different query types
+	b.Run("counting", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = advisor.SuggestREPL("How many times does X occur?", nil)
+		}
+	})
+
+	b.Run("arithmetic", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = advisor.SuggestREPL("What is the total sum of all values?", nil)
+		}
+	})
+
+	b.Run("sorting", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = advisor.SuggestREPL("Sort items by price ascending", nil)
+		}
+	})
+
+	b.Run("no_match", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = advisor.SuggestREPL("Explain this code to me", nil)
+		}
+	})
+}
