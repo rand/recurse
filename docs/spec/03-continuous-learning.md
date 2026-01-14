@@ -123,15 +123,15 @@ Support different preference scopes:
 
 ## Implementation Tasks
 
-- [ ] Define signal types and interfaces
-- [ ] Implement Knowledge Store with SQLite
-- [ ] Create Pattern Extractor (code, reasoning, structural)
-- [ ] Implement Knowledge Consolidator
-- [ ] Build Knowledge Applier
-- [ ] Integrate with RLM Controller
-- [ ] Add Ebbinghaus-style decay
+- [x] Define signal types and interfaces (internal/learning/signals.go)
+- [x] Implement Knowledge Store with SQLite (internal/learning/store.go)
+- [x] Create Pattern Extractor (code, reasoning, structural) (internal/learning/extractor.go)
+- [x] Implement Knowledge Consolidator (internal/learning/consolidator.go)
+- [x] Build Knowledge Applier (internal/learning/applier.go)
+- [x] Integrate with RLM Controller (internal/learning/engine.go)
+- [x] Add Ebbinghaus-style decay (consolidator.go calculateDecay)
 - [ ] Add observability metrics
-- [ ] Write unit and integration tests
+- [x] Write unit and integration tests (internal/learning/learning_test.go)
 
 ## Dependencies
 
