@@ -1,0 +1,31 @@
+# Disciplined Process Configuration
+version: "1.0"
+
+project:
+  name: "recurse"
+  language: "go"
+  description: "Recursive Language Model system with hypergraph memory for agentic coding"
+
+tracking:
+  provider: "beads"  # Already in use with 145 closed issues
+
+testing:
+  frameworks:
+    unit: "go test"
+    integration: "go test -tags=integration"
+    property: "pgregory.net/rapid"
+    benchmark: "go test -bench"
+
+enforcement:
+  level: "guided"  # Warn but don't block - personal tool
+
+hooks:
+  pre_commit:
+    - "run_tests"
+  post_commit:
+    - "sync_tasks"
+
+# Spec ID format: [SPEC-XX.YY] where XX=spec number, YY=section
+spec:
+  prefix: "SPEC"
+  format: "[SPEC-{num}.{section}]"
