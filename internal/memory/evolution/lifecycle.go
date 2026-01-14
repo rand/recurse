@@ -101,6 +101,9 @@ func NewLifecycleManager(store *hypergraph.Store, config LifecycleConfig) (*Life
 		return nil, fmt.Errorf("create audit logger: %w", err)
 	}
 
+	// Set the store on the audit logger for database persistence
+	audit.SetStore(store)
+
 	return &LifecycleManager{
 		store:        store,
 		config:       config,

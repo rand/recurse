@@ -1,6 +1,7 @@
 package evolution
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -469,5 +470,83 @@ func TestAuditEventTypes(t *testing.T) {
 
 	for _, typ := range types {
 		assert.NotEmpty(t, string(typ))
+	}
+}
+
+func TestSetStore_PersistsToDatabase(t *testing.T) {
+	// Create in-memory store
+	store, err := hypergraph.NewStore(hypergraph.Options{})
+	require.NoError(t, err)
+	defer store.Close()
+
+	// Create audit logger with store
+	logger, err := NewAuditLogger(DefaultAuditConfig())
+	require.NoError(t, err)
+	logger.SetStore(store)
+
+	// Log a promotion event
+	result := &PromotionResult{
+		TaskToSession:     3,
+		SessionToLongterm: 2,
+		Duration:          time.Millisecond * 100,
+	}
+	err = logger.LogPromotion(result, nil)
+	require.NoError(t, err)
+
+	// Log a consolidation event
+	consResult := &ConsolidationResult{
+		NodesProcessed:    10,
+		NodesMerged:       2,
+		SummariesCreated:  1,
+		EdgesStrengthened: 3,
+		Duration:          time.Millisecond * 50,
+	}
+	err = logger.LogConsolidation(hypergraph.TierTask, hypergraph.TierSession, consResult, nil)
+	require.NoError(t, err)
+
+	// Verify entries were persisted to evolution_log
+	ctx := context.Background()
+	entries, err := store.ListEvolutionLog(ctx, hypergraph.EvolutionFilter{Limit: 10})
+	require.NoError(t, err)
+
+	// Should have at least 2 entries (promote and consolidate)
+	assert.GreaterOrEqual(t, len(entries), 2)
+
+	// Check for promote entry
+	var foundPromote, foundConsolidate bool
+	for _, entry := range entries {
+		if entry.Operation == hypergraph.EvolutionPromote {
+			foundPromote = true
+		}
+		if entry.Operation == hypergraph.EvolutionConsolidate {
+			foundConsolidate = true
+		}
+	}
+	assert.True(t, foundPromote, "should have a promote entry")
+	assert.True(t, foundConsolidate, "should have a consolidate entry")
+}
+
+func TestMapEventToOperation(t *testing.T) {
+	tests := []struct {
+		eventType AuditEventType
+		expected  hypergraph.EvolutionOperation
+	}{
+		{AuditConsolidate, hypergraph.EvolutionConsolidate},
+		{AuditMerge, hypergraph.EvolutionConsolidate},
+		{AuditSummarize, hypergraph.EvolutionConsolidate},
+		{AuditPromote, hypergraph.EvolutionPromote},
+		{AuditDecay, hypergraph.EvolutionDecay},
+		{AuditArchive, hypergraph.EvolutionArchive},
+		{AuditPrune, hypergraph.EvolutionPrune},
+		{AuditAccess, ""}, // Access doesn't map to evolution operation
+		{AuditDemote, ""},
+		{AuditRestore, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.eventType), func(t *testing.T) {
+			got := mapEventToOperation(tt.eventType)
+			assert.Equal(t, tt.expected, got)
+		})
 	}
 }

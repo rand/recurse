@@ -1,6 +1,7 @@
 package evolution
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -56,6 +57,7 @@ type AuditLogger struct {
 	enabled  bool
 	entries  []AuditEntry // In-memory buffer for recent entries
 	maxBuf   int
+	store    *hypergraph.Store // Optional database store for persistence
 }
 
 // AuditConfig configures the audit logger.
@@ -107,6 +109,14 @@ func NewAuditLogger(config AuditConfig) (*AuditLogger, error) {
 	return logger, nil
 }
 
+// SetStore sets the hypergraph store for database persistence.
+// When set, audit entries will be written to the evolution_log table.
+func (l *AuditLogger) SetStore(store *hypergraph.Store) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.store = store
+}
+
 // Log records an audit entry.
 func (l *AuditLogger) Log(entry AuditEntry) error {
 	if !l.enabled {
@@ -135,7 +145,73 @@ func (l *AuditLogger) Log(entry AuditEntry) error {
 		}
 	}
 
+	// Persist to database if store is configured
+	if l.store != nil {
+		if err := l.persistToStore(entry); err != nil {
+			return fmt.Errorf("persist to store: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// persistToStore writes an audit entry to the evolution_log table.
+func (l *AuditLogger) persistToStore(entry AuditEntry) error {
+	// Map audit event type to evolution operation
+	op := mapEventToOperation(entry.EventType)
+	if op == "" {
+		// Skip events that don't map to evolution operations
+		return nil
+	}
+
+	// Collect node IDs
+	var nodeIDs []string
+	if entry.NodeID != "" {
+		nodeIDs = append(nodeIDs, entry.NodeID)
+	}
+	nodeIDs = append(nodeIDs, entry.NodeIDs...)
+
+	// Build reasoning from event details
+	var reasoning string
+	if entry.Result != nil && entry.Result.Error != "" {
+		reasoning = fmt.Sprintf("Error: %s", entry.Result.Error)
+	} else if entry.Details != nil {
+		// Serialize details as reasoning
+		if detailsJSON, err := json.Marshal(entry.Details); err == nil {
+			reasoning = string(detailsJSON)
+		}
+	}
+
+	// Create evolution entry
+	evolutionEntry := &hypergraph.EvolutionEntry{
+		Timestamp: entry.Timestamp,
+		Operation: op,
+		NodeIDs:   nodeIDs,
+		FromTier:  entry.SourceTier,
+		ToTier:    entry.TargetTier,
+		Reasoning: reasoning,
+	}
+
+	return l.store.RecordEvolution(context.Background(), evolutionEntry)
+}
+
+// mapEventToOperation maps an AuditEventType to an EvolutionOperation.
+func mapEventToOperation(eventType AuditEventType) hypergraph.EvolutionOperation {
+	switch eventType {
+	case AuditConsolidate, AuditMerge, AuditSummarize:
+		return hypergraph.EvolutionConsolidate
+	case AuditPromote:
+		return hypergraph.EvolutionPromote
+	case AuditDecay:
+		return hypergraph.EvolutionDecay
+	case AuditArchive:
+		return hypergraph.EvolutionArchive
+	case AuditPrune:
+		return hypergraph.EvolutionPrune
+	default:
+		// AuditDemote, AuditRestore, AuditAccess don't have direct mappings
+		return ""
+	}
 }
 
 // LogConsolidation logs a consolidation operation.
