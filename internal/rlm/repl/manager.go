@@ -47,6 +47,9 @@ type Manager struct {
 
 	// resourceCallback is called when resource events occur.
 	resourceCallback ResourceCallback
+
+	// pluginManager handles plugin function calls.
+	pluginManager *PluginManager
 }
 
 // Options configures the REPL manager.
@@ -536,6 +539,32 @@ func (m *Manager) handleCallback(ctx context.Context, data []byte) error {
 			} else {
 				resp.Result = edgeID
 			}
+		}
+
+	// Plugin function callbacks
+	case "plugin_call":
+		if m.pluginManager == nil {
+			resp.Error = "Plugin manager not configured"
+		} else {
+			funcName, _ := req.Params["function"].(string)
+			argsRaw, _ := req.Params["args"].([]interface{})
+
+			result, err := m.pluginManager.Call(ctx, funcName, argsRaw...)
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				// Encode result as JSON
+				resultJSON, _ := json.Marshal(result)
+				resp.Result = string(resultJSON)
+			}
+		}
+
+	case "plugin_list":
+		if m.pluginManager == nil {
+			resp.Error = "Plugin manager not configured"
+		} else {
+			manifest := m.pluginManager.GenerateManifest()
+			resp.Result = manifest
 		}
 
 	default:
