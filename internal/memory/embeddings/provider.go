@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
+	"os"
 )
 
 // Provider generates embeddings from text.
@@ -19,6 +20,48 @@ type Provider interface {
 
 	// Model returns the model identifier.
 	Model() string
+}
+
+// ProviderType identifies the type of embedding provider.
+type ProviderType string
+
+const (
+	// ProviderTypeVoyage uses Voyage AI's API (requires VOYAGE_API_KEY).
+	ProviderTypeVoyage ProviderType = "voyage"
+	// ProviderTypeLocal uses a local Python server with CodeRankEmbed.
+	ProviderTypeLocal ProviderType = "local"
+)
+
+// NewProvider creates an embedding provider based on configuration.
+// It automatically selects between local (CodeRankEmbed) and Voyage AI
+// based on environment variables.
+//
+// Environment variables:
+//   - EMBEDDING_PROVIDER: "local" or "voyage" (default: auto-detect)
+//   - VOYAGE_API_KEY: Required for Voyage AI
+//   - EMBEDDING_MODEL: Override model name
+//   - EMBEDDING_SERVER_URL: Override local server URL
+func NewProvider() (Provider, error) {
+	providerType := os.Getenv("EMBEDDING_PROVIDER")
+
+	// Auto-detect based on available credentials
+	if providerType == "" {
+		if os.Getenv("VOYAGE_API_KEY") != "" {
+			providerType = string(ProviderTypeVoyage)
+		} else {
+			providerType = string(ProviderTypeLocal)
+		}
+	}
+
+	switch ProviderType(providerType) {
+	case ProviderTypeVoyage:
+		return NewVoyageProvider()
+	case ProviderTypeLocal:
+		return NewLocalProvider()
+	default:
+		// Default to local if unknown
+		return NewLocalProvider()
+	}
 }
 
 // Vector is a dense embedding vector.

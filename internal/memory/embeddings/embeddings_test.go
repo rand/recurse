@@ -378,3 +378,71 @@ func TestVoyageProvider_Integration(t *testing.T) {
 	sim := vectors[0].Similarity(vectors[1])
 	assert.Greater(t, sim, float32(0.7))
 }
+
+func TestLocalProvider_Config(t *testing.T) {
+	// Test provider creation with options
+	provider, err := NewLocalProvider(
+		WithLocalURL("http://localhost:12345"),
+		WithLocalModel("test-model"),
+		WithAutoStart(false),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "test-model", provider.Model())
+}
+
+func TestLocalProvider_IsRunning(t *testing.T) {
+	// Test with a port that definitely has no server
+	provider, err := NewLocalProvider(
+		WithAutoStart(false),
+		WithLocalURL("http://127.0.0.1:59999"), // Unlikely to be in use
+	)
+	require.NoError(t, err)
+	assert.False(t, provider.IsRunning())
+}
+
+func TestNewProvider_AutoDetect(t *testing.T) {
+	// Without VOYAGE_API_KEY, should default to local
+	t.Setenv("VOYAGE_API_KEY", "")
+	t.Setenv("EMBEDDING_PROVIDER", "")
+
+	provider, err := NewProvider()
+	require.NoError(t, err)
+
+	// Should be local provider
+	_, ok := provider.(*LocalProvider)
+	assert.True(t, ok, "expected LocalProvider when no VOYAGE_API_KEY")
+}
+
+func TestNewProvider_ExplicitLocal(t *testing.T) {
+	t.Setenv("EMBEDDING_PROVIDER", "local")
+
+	provider, err := NewProvider()
+	require.NoError(t, err)
+
+	_, ok := provider.(*LocalProvider)
+	assert.True(t, ok)
+}
+
+// Integration test with local server (skipped unless server is running)
+func TestLocalProvider_Integration(t *testing.T) {
+	provider, err := NewLocalProvider(WithAutoStart(false))
+	require.NoError(t, err)
+
+	if !provider.IsRunning() {
+		t.Skip("Local embedding server not running, skipping integration test")
+	}
+
+	ctx := context.Background()
+	vectors, err := provider.Embed(ctx, []string{
+		"def factorial(n): return 1 if n <= 1 else n * factorial(n-1)",
+		"def fibonacci(n): return n if n <= 1 else fibonacci(n-1) + fibonacci(n-2)",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, vectors, 2)
+	assert.Len(t, vectors[0], 768) // CodeRankEmbed outputs 768-dim
+
+	// Similar code should have reasonable similarity
+	sim := vectors[0].Similarity(vectors[1])
+	assert.Greater(t, sim, float32(0.5))
+}

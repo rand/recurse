@@ -1,0 +1,9 @@
+# Embedding server dependencies
+# Install: pip install -r requirements-embeddings.txt
+#
+# For Apple Silicon (M1/M2/M3), PyTorch uses MPS acceleration automatically.
+# Model size: CodeRankEmbed ~500MB download, ~1GB RAM when loaded.
+
+sentence-transformers>=3.0.0
+torch>=2.0.0
+einops>=0.8.0
