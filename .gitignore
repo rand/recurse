@@ -33,6 +33,9 @@ Thumbs.db
 .beads/bd.sock
 .beads/bd.pipe
 .beads/.exclusive-lock
+.beads/.local_version
+.beads/sync_base.jsonl
+.beads/.sync.lock
 
 # Recurse local files
 .recurse/memory.db
@@ -52,3 +55,6 @@ ENV/
 /tmp/
 *.tmp
 .reasoning_logs/
+
+# Test artifacts
+**/testdata/rapid/
