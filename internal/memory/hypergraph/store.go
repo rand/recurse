@@ -6,10 +6,12 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 
+	"github.com/rand/recurse/internal/memory/embeddings"
 	_ "github.com/ncruces/go-sqlite3/driver"
 	_ "github.com/ncruces/go-sqlite3/embed"
 )
@@ -19,9 +21,12 @@ var schemaSQL string
 
 // Store manages the hypergraph memory database.
 type Store struct {
-	db   *sql.DB
-	mu   sync.RWMutex
-	path string
+	db             *sql.DB
+	mu             sync.RWMutex
+	path           string
+	embeddingIndex *embeddings.Index
+	hybridSearcher *HybridSearcher
+	logger         *slog.Logger
 }
 
 // Options configures the hypergraph store.
@@ -32,6 +37,27 @@ type Options struct {
 
 	// CreateIfNotExists creates the database file if it doesn't exist.
 	CreateIfNotExists bool
+
+	// EmbeddingProvider enables semantic search with the given provider.
+	// If nil, only keyword search is available.
+	EmbeddingProvider embeddings.Provider
+
+	// EmbeddingConfig configures the embedding index.
+	EmbeddingConfig EmbeddingConfig
+
+	// Logger for store operations.
+	Logger *slog.Logger
+}
+
+// EmbeddingConfig configures the embedding index.
+type EmbeddingConfig struct {
+	BatchSize int // Texts to embed per batch (default: 32)
+	Workers   int // Background workers (default: 2)
+	QueueSize int // Background queue depth (default: 1000)
+
+	// HybridAlpha is the weight for semantic vs keyword search.
+	// 0 = keyword only, 1 = semantic only, default = 0.7.
+	HybridAlpha float64
 }
 
 // NewStore creates a new hypergraph store with the given options.
@@ -62,15 +88,41 @@ func NewStore(opts Options) (*Store, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	store := &Store{
-		db:   db,
-		path: opts.Path,
+		db:     db,
+		path:   opts.Path,
+		logger: logger,
 	}
 
 	// Initialize schema
 	if err := store.initSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
+	}
+
+	// Initialize embedding index if provider is configured
+	if opts.EmbeddingProvider != nil {
+		idx, err := embeddings.NewIndex(db, embeddings.IndexConfig{
+			Provider:  opts.EmbeddingProvider,
+			BatchSize: opts.EmbeddingConfig.BatchSize,
+			Workers:   opts.EmbeddingConfig.Workers,
+			QueueSize: opts.EmbeddingConfig.QueueSize,
+			Logger:    logger,
+		})
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("init embedding index: %w", err)
+		}
+		store.embeddingIndex = idx
+		store.hybridSearcher = NewHybridSearcher(store, idx, HybridConfig{
+			Alpha:  opts.EmbeddingConfig.HybridAlpha,
+			Logger: logger,
+		})
 	}
 
 	return store, nil
@@ -89,10 +141,17 @@ func (s *Store) initSchema() error {
 	return nil
 }
 
-// Close closes the database connection.
+// Close closes the database connection and embedding index.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Close embedding index first
+	if s.embeddingIndex != nil {
+		if err := s.embeddingIndex.Close(); err != nil {
+			s.logger.Error("close embedding index", "error", err)
+		}
+	}
 
 	if s.db != nil {
 		return s.db.Close()
@@ -202,4 +261,40 @@ func (s *Store) WithTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	}
 
 	return nil
+}
+
+// Search performs hybrid keyword + semantic search if embeddings are enabled,
+// otherwise falls back to keyword-only search.
+func (s *Store) Search(ctx context.Context, query string, opts SearchOptions) ([]*SearchResult, error) {
+	if s.hybridSearcher != nil {
+		return s.hybridSearcher.Search(ctx, query, opts)
+	}
+	return s.SearchByContent(ctx, query, opts)
+}
+
+// HasEmbeddings returns true if embedding search is enabled.
+func (s *Store) HasEmbeddings() bool {
+	return s.embeddingIndex != nil
+}
+
+// EmbeddingIndex returns the embedding index, or nil if not configured.
+func (s *Store) EmbeddingIndex() *embeddings.Index {
+	return s.embeddingIndex
+}
+
+// QueueEmbedding queues a node for background embedding.
+// Does nothing if embeddings are not configured.
+func (s *Store) QueueEmbedding(nodeID, content string) {
+	if s.embeddingIndex != nil && content != "" {
+		s.embeddingIndex.IndexAsync(nodeID, content)
+	}
+}
+
+// EmbedSync embeds a node synchronously, waiting for completion.
+// Returns nil if embeddings are not configured.
+func (s *Store) EmbedSync(ctx context.Context, nodeID, content string) error {
+	if s.embeddingIndex == nil {
+		return nil
+	}
+	return s.embeddingIndex.IndexSync(ctx, nodeID, content)
 }
