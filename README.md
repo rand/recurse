@@ -12,7 +12,7 @@ Recurse is a personal agentic coding environment that extends [Crush](https://gi
 
 ### Prerequisites
 
-- **Go 1.21+**: `brew install go` or [golang.org](https://golang.org/dl/)
+- **Go 1.22+**: `brew install go` or [golang.org](https://golang.org/dl/)
 - **Python 3.11+**: `brew install python@3.11` or [python.org](https://python.org)
 - **uv** (Python package manager): `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **OpenRouter API Key**: Get one at [openrouter.ai](https://openrouter.ai)
