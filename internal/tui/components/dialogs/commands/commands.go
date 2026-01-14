@@ -81,8 +81,9 @@ type (
 	OpenReasoningDialogMsg struct{}
 	OpenExternalEditorMsg  struct{}
 	ToggleYoloModeMsg      struct{}
-	OpenRLMTraceDialogMsg  struct{}
-	OpenMemoryDialogMsg    struct{}
+	OpenRLMTraceDialogMsg    struct{}
+	OpenMemoryDialogMsg      struct{}
+	OpenREPLOutputDialogMsg  struct{}
 	CompactMsg             struct {
 		SessionID string
 	}
@@ -453,6 +454,17 @@ func (c *commandDialogCmp) defaultCommands() []Command {
 		Description: "Browse and search hypergraph memory",
 		Handler: func(cmd Command) tea.Cmd {
 			return util.CmdHandler(OpenMemoryDialogMsg{})
+		},
+	})
+
+	// Add REPL Output command
+	commands = append(commands, Command{
+		ID:          "repl_output",
+		Title:       "REPL Output",
+		Shortcut:    "ctrl+r",
+		Description: "View Python REPL execution history",
+		Handler: func(cmd Command) tea.Cmd {
+			return util.CmdHandler(OpenREPLOutputDialogMsg{})
 		},
 	})
 

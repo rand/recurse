@@ -32,6 +32,7 @@ import (
 	"github.com/rand/recurse/internal/tui/components/dialogs/permissions"
 	"github.com/rand/recurse/internal/tui/components/dialogs/quit"
 	"github.com/rand/recurse/internal/tui/components/dialogs/memory"
+	"github.com/rand/recurse/internal/tui/components/dialogs/reploutput"
 	"github.com/rand/recurse/internal/tui/components/dialogs/rlmtrace"
 	"github.com/rand/recurse/internal/tui/components/dialogs/sessions"
 	"github.com/rand/recurse/internal/tui/page"
@@ -329,6 +330,18 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, util.CmdHandler(dialogs.OpenDialogMsg{
 			Model: memory.NewMemoryDialog(a.app.MemoryStore),
 		})
+	// REPL Output
+	case commands.OpenREPLOutputDialogMsg:
+		if a.dialog.ActiveDialogID() == reploutput.REPLOutputDialogID {
+			return a, util.CmdHandler(dialogs.CloseDialogMsg{})
+		}
+		// Check if REPL history is available
+		if a.app.REPLHistory == nil {
+			return a, util.ReportWarn("REPL not available")
+		}
+		return a, util.CmdHandler(dialogs.OpenDialogMsg{
+			Model: reploutput.NewREPLOutputDialog(a.app.REPLHistory),
+		})
 	// Permissions
 	case pubsub.Event[permission.PermissionNotification]:
 		item, ok := a.pages[a.currentPage]
@@ -596,6 +609,19 @@ func (a *appModel) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return util.CmdHandler(dialogs.OpenDialogMsg{
 			Model: memory.NewMemoryDialog(a.app.MemoryStore),
+		})
+	case key.Matches(msg, a.keyMap.REPLOutput):
+		if a.dialog.ActiveDialogID() == reploutput.REPLOutputDialogID {
+			return util.CmdHandler(dialogs.CloseDialogMsg{})
+		}
+		if a.dialog.HasDialogs() {
+			return nil
+		}
+		if a.app.REPLHistory == nil {
+			return util.ReportWarn("REPL not available")
+		}
+		return util.CmdHandler(dialogs.OpenDialogMsg{
+			Model: reploutput.NewREPLOutputDialog(a.app.REPLHistory),
 		})
 	case key.Matches(msg, a.keyMap.Suspend):
 		if a.app.AgentCoordinator != nil && a.app.AgentCoordinator.IsBusy() {

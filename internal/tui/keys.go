@@ -5,14 +5,15 @@ import (
 )
 
 type KeyMap struct {
-	Quit     key.Binding
-	Help     key.Binding
-	Commands key.Binding
-	Suspend  key.Binding
-	Models   key.Binding
-	Sessions key.Binding
-	RLMTrace key.Binding
-	Memory   key.Binding
+	Quit       key.Binding
+	Help       key.Binding
+	Commands   key.Binding
+	Suspend    key.Binding
+	Models     key.Binding
+	Sessions   key.Binding
+	RLMTrace   key.Binding
+	Memory     key.Binding
+	REPLOutput key.Binding
 
 	pageBindings []key.Binding
 }
@@ -50,6 +51,10 @@ func DefaultKeyMap() KeyMap {
 		Memory: key.NewBinding(
 			key.WithKeys("ctrl+b"),
 			key.WithHelp("ctrl+b", "memory"),
+		),
+		REPLOutput: key.NewBinding(
+			key.WithKeys("ctrl+r"),
+			key.WithHelp("ctrl+r", "repl"),
 		),
 	}
 }

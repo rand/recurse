@@ -152,8 +152,8 @@ Features:
 - [x] Implement RLM trace tree component (internal/tui/components/dialogs/rlmtrace/)
 - [x] Implement memory search/filter UI (internal/tui/components/dialogs/memory/)
 - [x] Add budget status bar component (internal/tui/components/core/status/budget.go)
-- [ ] Create REPL output viewer
-- [x] Add keyboard navigation (Ctrl+T trace, Ctrl+B memory, command palette)
+- [x] Create REPL output viewer (internal/tui/components/dialogs/reploutput/)
+- [x] Add keyboard navigation (Ctrl+T trace, Ctrl+B memory, Ctrl+R REPL, command palette)
 - [ ] Implement panel resize/layout
 - [x] Add theming support (styles/theme.go with full palette)
 - [x] Write component tests (trace_test.go, memory_test.go, budget_test.go)

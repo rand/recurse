@@ -56,6 +56,9 @@ type App struct {
 	// REPLManager manages the Python REPL for code execution.
 	REPLManager *repl.Manager
 
+	// REPLHistory tracks REPL execution history for the TUI.
+	REPLHistory *REPLHistoryAdapter
+
 	// MemoryStore provides access to hypergraph memory for the TUI.
 	MemoryStore *MemoryStoreAdapter
 
@@ -131,6 +134,7 @@ func New(ctx context.Context, conn *sql.DB, cfg *config.Config) (*App, error) {
 		slog.Warn("Failed to create REPL manager", "error", err)
 	} else {
 		app.REPLManager = replMgr
+		app.REPLHistory = NewREPLHistoryAdapter(replMgr, 100)
 		slog.Info("REPL manager created", "workdir", cfg.WorkingDir())
 		// Start REPL in background
 		go func() {
