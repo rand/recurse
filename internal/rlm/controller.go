@@ -507,12 +507,37 @@ func (c *Controller) queryMemoryContext(ctx context.Context, task string) ([]str
 		return nil, err
 	}
 
-	// Filter by relevance
-	var hints []string
+	// Extract keywords from task (words >= 4 chars, excluding common words)
 	taskLower := strings.ToLower(task)
+	words := strings.Fields(taskLower)
+	commonWords := map[string]bool{
+		"what": true, "how": true, "why": true, "when": true, "where": true,
+		"the": true, "this": true, "that": true, "about": true, "with": true,
+		"from": true, "have": true, "does": true, "tell": true, "explain": true,
+	}
+
+	var keywords []string
+	for _, w := range words {
+		if len(w) >= 4 && !commonWords[w] {
+			keywords = append(keywords, w)
+		}
+	}
+
+	// Filter by relevance: check if any keyword appears in content
+	var hints []string
 	for _, node := range nodes {
-		if strings.Contains(strings.ToLower(node.Content), taskLower[:min(len(taskLower), 20)]) {
+		contentLower := strings.ToLower(node.Content)
+		matched := false
+		for _, kw := range keywords {
+			if strings.Contains(contentLower, kw) {
+				matched = true
+				break
+			}
+		}
+		if matched {
 			hints = append(hints, truncate(node.Content, 100))
+			// Increment access count for facts used as context
+			c.store.IncrementAccess(ctx, node.ID)
 		}
 	}
 
