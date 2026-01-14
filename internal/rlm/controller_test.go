@@ -53,7 +53,7 @@ func TestNewController(t *testing.T) {
 	metaCtrl := meta.NewController(client, meta.DefaultConfig())
 	cfg := DefaultControllerConfig()
 
-	ctrl := NewController(metaCtrl, store, cfg)
+	ctrl := NewController(metaCtrl, client, store, cfg)
 
 	require.NotNil(t, ctrl)
 	assert.NotNil(t, ctrl.meta)
@@ -65,7 +65,7 @@ func TestSetTracer(t *testing.T) {
 	store := createTestStore(t)
 	client := &mockLLMClient{}
 	metaCtrl := meta.NewController(client, meta.DefaultConfig())
-	ctrl := NewController(metaCtrl, store, DefaultControllerConfig())
+	ctrl := NewController(metaCtrl, client, store, DefaultControllerConfig())
 
 	tracer := &mockTraceRecorder{}
 	ctrl.SetTracer(tracer)
@@ -81,7 +81,7 @@ func TestExecute_DirectAction(t *testing.T) {
 	metaCtrl := meta.NewController(client, meta.DefaultConfig())
 	cfg := DefaultControllerConfig()
 	cfg.StoreDecisions = false // Disable for simpler test
-	ctrl := NewController(metaCtrl, store, cfg)
+	ctrl := NewController(metaCtrl, client, store, cfg)
 	ctx := context.Background()
 
 	result, err := ctrl.Execute(ctx, "What is 2+2?")
@@ -101,7 +101,7 @@ func TestExecute_WithTracing(t *testing.T) {
 	cfg := DefaultControllerConfig()
 	cfg.StoreDecisions = false
 	cfg.TraceEnabled = true
-	ctrl := NewController(metaCtrl, store, cfg)
+	ctrl := NewController(metaCtrl, client, store, cfg)
 
 	tracer := &mockTraceRecorder{}
 	ctrl.SetTracer(tracer)
@@ -121,7 +121,7 @@ func TestExecute_WithMemoryStorage(t *testing.T) {
 	metaCtrl := meta.NewController(client, meta.DefaultConfig())
 	cfg := DefaultControllerConfig()
 	cfg.StoreDecisions = true
-	ctrl := NewController(metaCtrl, store, cfg)
+	ctrl := NewController(metaCtrl, client, store, cfg)
 	ctx := context.Background()
 
 	_, err := ctrl.Execute(ctx, "Important task")
@@ -151,7 +151,7 @@ func TestExecute_MemoryQuery(t *testing.T) {
 	metaCtrl := meta.NewController(client, meta.DefaultConfig())
 	cfg := DefaultControllerConfig()
 	cfg.StoreDecisions = false
-	ctrl := NewController(metaCtrl, store, cfg)
+	ctrl := NewController(metaCtrl, client, store, cfg)
 
 	result, err := ctrl.Execute(ctx, "What language does the project use?")
 	require.NoError(t, err)
@@ -172,7 +172,7 @@ func TestExecute_Decompose(t *testing.T) {
 	metaCtrl := meta.NewController(client, meta.DefaultConfig())
 	cfg := DefaultControllerConfig()
 	cfg.StoreDecisions = false
-	ctrl := NewController(metaCtrl, store, cfg)
+	ctrl := NewController(metaCtrl, client, store, cfg)
 	ctx := context.Background()
 
 	result, err := ctrl.Execute(ctx, "Explain memory management and garbage collection")
@@ -196,7 +196,7 @@ func TestQueryMemoryContext(t *testing.T) {
 
 	client := &mockLLMClient{}
 	metaCtrl := meta.NewController(client, meta.DefaultConfig())
-	ctrl := NewController(metaCtrl, store, DefaultControllerConfig())
+	ctrl := NewController(metaCtrl, client, store, DefaultControllerConfig())
 
 	hints, err := ctrl.queryMemoryContext(ctx, "Tell me about the system storage")
 	require.NoError(t, err)
@@ -209,7 +209,7 @@ func TestExecuteSynthesize(t *testing.T) {
 	store := createTestStore(t)
 	client := &mockLLMClient{}
 	metaCtrl := meta.NewController(client, meta.DefaultConfig())
-	ctrl := NewController(metaCtrl, store, DefaultControllerConfig())
+	ctrl := NewController(metaCtrl, client, store, DefaultControllerConfig())
 	ctx := context.Background()
 
 	state := meta.State{
@@ -232,7 +232,7 @@ func TestExecuteSynthesize_Empty(t *testing.T) {
 	store := createTestStore(t)
 	client := &mockLLMClient{}
 	metaCtrl := meta.NewController(client, meta.DefaultConfig())
-	ctrl := NewController(metaCtrl, store, DefaultControllerConfig())
+	ctrl := NewController(metaCtrl, client, store, DefaultControllerConfig())
 	ctx := context.Background()
 
 	state := meta.State{

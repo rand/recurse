@@ -17,6 +17,7 @@ import (
 // Controller orchestrates RLM operations with integrated memory.
 type Controller struct {
 	meta        *meta.Controller
+	mainClient  meta.LLMClient // Main LLM for response generation
 	store       *hypergraph.Store
 	synthesizer synthesize.Synthesizer
 	tracer      TraceRecorder
@@ -79,11 +80,13 @@ type TraceEvent struct {
 // NewController creates a new RLM controller with memory integration.
 func NewController(
 	metaCtrl *meta.Controller,
+	mainClient meta.LLMClient,
 	store *hypergraph.Store,
 	cfg ControllerConfig,
 ) *Controller {
 	return &Controller{
 		meta:        metaCtrl,
+		mainClient:  mainClient,
 		store:       store,
 		synthesizer: synthesize.NewConcatenateSynthesizer(),
 		config:      cfg,
@@ -308,14 +311,31 @@ func (c *Controller) executeAction(ctx context.Context, state meta.State, decisi
 
 // executeDirect answers directly using current context.
 func (c *Controller) executeDirect(ctx context.Context, state meta.State) (string, int, error) {
-	// In a full implementation, this would call the main LLM to generate a response.
-	// For the CLI demonstration, we acknowledge the task was processed directly.
-	tokens := estimateTokens(state.Task) * 2
+	// Build prompt with any available memory hints
+	var prompt strings.Builder
+	prompt.WriteString(state.Task)
 
-	// Return the task as the response since it was deemed simple enough for direct handling
-	// In production, this would be replaced with an actual LLM call
-	response := state.Task
-	return response, tokens, nil
+	if len(state.MemoryHints) > 0 {
+		prompt.WriteString("\n\nRelevant context from memory:\n")
+		for _, hint := range state.MemoryHints {
+			prompt.WriteString("- ")
+			prompt.WriteString(hint)
+			prompt.WriteString("\n")
+		}
+	}
+
+	// Estimate output tokens (roughly 2x input for a response)
+	inputTokens := estimateTokens(prompt.String())
+	maxOutputTokens := min(inputTokens*2, 4000) // Cap at 4000 output tokens
+
+	// Call the main LLM to generate a response
+	response, err := c.mainClient.Complete(ctx, prompt.String(), maxOutputTokens)
+	if err != nil {
+		return "", inputTokens, fmt.Errorf("main LLM call: %w", err)
+	}
+
+	totalTokens := inputTokens + estimateTokens(response)
+	return response, totalTokens, nil
 }
 
 // executeDecompose breaks task into subtasks and processes them.

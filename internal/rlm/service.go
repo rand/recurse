@@ -115,8 +115,8 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	// Create meta-controller
 	metaCtrl := meta.NewController(llmClient, config.Meta)
 
-	// Create RLM controller
-	controller := NewController(metaCtrl, store, config.Controller)
+	// Create RLM controller with the main LLM client for response generation
+	controller := NewController(metaCtrl, llmClient, store, config.Controller)
 
 	// Create trace provider (persistent or in-memory)
 	var tracer traceRecorder
