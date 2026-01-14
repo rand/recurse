@@ -82,6 +82,7 @@ type (
 	OpenExternalEditorMsg  struct{}
 	ToggleYoloModeMsg      struct{}
 	OpenRLMTraceDialogMsg  struct{}
+	OpenMemoryDialogMsg    struct{}
 	CompactMsg             struct {
 		SessionID string
 	}
@@ -437,9 +438,21 @@ func (c *commandDialogCmp) defaultCommands() []Command {
 	commands = append(commands, Command{
 		ID:          "rlm_trace",
 		Title:       "RLM Trace",
+		Shortcut:    "ctrl+t",
 		Description: "View RLM orchestration trace events",
 		Handler: func(cmd Command) tea.Cmd {
 			return util.CmdHandler(OpenRLMTraceDialogMsg{})
+		},
+	})
+
+	// Add Memory Inspector command
+	commands = append(commands, Command{
+		ID:          "memory_inspector",
+		Title:       "Memory Inspector",
+		Shortcut:    "ctrl+b",
+		Description: "Browse and search hypergraph memory",
+		Handler: func(cmd Command) tea.Cmd {
+			return util.CmdHandler(OpenMemoryDialogMsg{})
 		},
 	})
 

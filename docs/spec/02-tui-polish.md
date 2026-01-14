@@ -8,9 +8,17 @@ The TUI extends Crush's Bubble Tea interface with panels for RLM trace visualiza
 
 ## Current State
 
-- Basic TUI structure from Crush exists
-- `internal/tui/` has some extensions
-- Missing: RLM trace view, memory inspector, panel switching
+**Implemented:**
+- Full TUI structure with Bubble Tea framework
+- RLM Trace dialog (`internal/tui/components/dialogs/rlmtrace/`)
+- Memory Inspector dialog (`internal/tui/components/dialogs/memory/`)
+- Budget status component (`internal/tui/components/core/status/budget.go`)
+- Keyboard shortcuts: Ctrl+T (trace), Ctrl+B (memory), Ctrl+P (commands)
+- Theme system with configurable colors
+
+**Remaining:**
+- REPL output viewer panel
+- Full panel resize/layout system
 
 ## Requirements
 
@@ -140,15 +148,15 @@ Features:
 
 ## Implementation Tasks
 
-- [ ] Create panel manager with tab switching
-- [ ] Implement RLM trace tree component
-- [ ] Implement memory search/filter UI
-- [ ] Add budget status bar component
+- [x] Create panel manager with tab switching (dialogs used as panels)
+- [x] Implement RLM trace tree component (internal/tui/components/dialogs/rlmtrace/)
+- [x] Implement memory search/filter UI (internal/tui/components/dialogs/memory/)
+- [x] Add budget status bar component (internal/tui/components/core/status/budget.go)
 - [ ] Create REPL output viewer
-- [ ] Add keyboard navigation
+- [x] Add keyboard navigation (Ctrl+T trace, Ctrl+B memory, command palette)
 - [ ] Implement panel resize/layout
-- [ ] Add theming support
-- [ ] Write component tests
+- [x] Add theming support (styles/theme.go with full palette)
+- [x] Write component tests (trace_test.go, memory_test.go, budget_test.go)
 
 ## Dependencies
 

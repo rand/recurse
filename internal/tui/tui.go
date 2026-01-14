@@ -31,6 +31,7 @@ import (
 	"github.com/rand/recurse/internal/tui/components/dialogs/models"
 	"github.com/rand/recurse/internal/tui/components/dialogs/permissions"
 	"github.com/rand/recurse/internal/tui/components/dialogs/quit"
+	"github.com/rand/recurse/internal/tui/components/dialogs/memory"
 	"github.com/rand/recurse/internal/tui/components/dialogs/rlmtrace"
 	"github.com/rand/recurse/internal/tui/components/dialogs/sessions"
 	"github.com/rand/recurse/internal/tui/page"
@@ -316,6 +317,18 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, util.CmdHandler(dialogs.OpenDialogMsg{
 			Model: rlmtrace.NewTraceDialog(a.app.RLM.TraceProvider()),
 		})
+	// Memory Inspector
+	case commands.OpenMemoryDialogMsg:
+		if a.dialog.ActiveDialogID() == memory.MemoryDialogID {
+			return a, util.CmdHandler(dialogs.CloseDialogMsg{})
+		}
+		// Check if memory store is available
+		if a.app.MemoryStore == nil {
+			return a, util.ReportWarn("Memory store not available")
+		}
+		return a, util.CmdHandler(dialogs.OpenDialogMsg{
+			Model: memory.NewMemoryDialog(a.app.MemoryStore),
+		})
 	// Permissions
 	case pubsub.Event[permission.PermissionNotification]:
 		item, ok := a.pages[a.currentPage]
@@ -558,6 +571,32 @@ func (a *appModel) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			},
 		)
 		return tea.Sequence(cmds...)
+	case key.Matches(msg, a.keyMap.RLMTrace):
+		if a.dialog.ActiveDialogID() == rlmtrace.RLMTraceDialogID {
+			return util.CmdHandler(dialogs.CloseDialogMsg{})
+		}
+		if a.dialog.HasDialogs() {
+			return nil
+		}
+		if a.app.RLM == nil {
+			return util.ReportWarn("RLM service not available")
+		}
+		return util.CmdHandler(dialogs.OpenDialogMsg{
+			Model: rlmtrace.NewTraceDialog(a.app.RLM.TraceProvider()),
+		})
+	case key.Matches(msg, a.keyMap.Memory):
+		if a.dialog.ActiveDialogID() == memory.MemoryDialogID {
+			return util.CmdHandler(dialogs.CloseDialogMsg{})
+		}
+		if a.dialog.HasDialogs() {
+			return nil
+		}
+		if a.app.MemoryStore == nil {
+			return util.ReportWarn("Memory store not available")
+		}
+		return util.CmdHandler(dialogs.OpenDialogMsg{
+			Model: memory.NewMemoryDialog(a.app.MemoryStore),
+		})
 	case key.Matches(msg, a.keyMap.Suspend):
 		if a.app.AgentCoordinator != nil && a.app.AgentCoordinator.IsBusy() {
 			return util.ReportWarn("Agent is busy, please wait...")

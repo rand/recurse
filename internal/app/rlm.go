@@ -47,6 +47,11 @@ func (app *App) InitRLM(ctx context.Context) error {
 
 	app.RLM = svc
 
+	// Create memory store adapter for TUI memory inspector
+	if store := svc.Store(); store != nil {
+		app.MemoryStore = NewMemoryStoreAdapter(store)
+	}
+
 	// Add cleanup
 	app.cleanupFuncs = append(app.cleanupFuncs, func() error {
 		if app.RLM != nil {

@@ -56,6 +56,9 @@ type App struct {
 	// REPLManager manages the Python REPL for code execution.
 	REPLManager *repl.Manager
 
+	// MemoryStore provides access to hypergraph memory for the TUI.
+	MemoryStore *MemoryStoreAdapter
+
 	LSPClients *csync.Map[string, *lsp.Client]
 
 	config *config.Config
