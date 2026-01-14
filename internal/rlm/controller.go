@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rand/recurse/internal/memory/hypergraph"
+	"github.com/rand/recurse/internal/rlm/async"
 	"github.com/rand/recurse/internal/rlm/decompose"
 	"github.com/rand/recurse/internal/rlm/meta"
 	"github.com/rand/recurse/internal/rlm/synthesize"
@@ -16,13 +17,14 @@ import (
 
 // Controller orchestrates RLM operations with integrated memory.
 type Controller struct {
-	meta        *meta.Controller
-	mainClient  meta.LLMClient // Main LLM for response generation
-	store       *hypergraph.Store
-	synthesizer synthesize.Synthesizer
-	tracer      TraceRecorder
-	config      ControllerConfig
-	recovery    *RecoveryManager
+	meta          *meta.Controller
+	mainClient    meta.LLMClient // Main LLM for response generation
+	store         *hypergraph.Store
+	synthesizer   synthesize.Synthesizer
+	tracer        TraceRecorder
+	config        ControllerConfig
+	recovery      *RecoveryManager
+	asyncExecutor *async.Executor
 }
 
 // ControllerConfig configures the RLM controller.
@@ -44,6 +46,12 @@ type ControllerConfig struct {
 
 	// Recovery configures error recovery behavior.
 	Recovery RecoveryConfig
+
+	// EnableAsyncExecution enables parallel execution for decomposition.
+	EnableAsyncExecution bool
+
+	// MaxParallelOps is the maximum concurrent operations (default: 4).
+	MaxParallelOps int
 }
 
 // DefaultControllerConfig returns sensible defaults.
@@ -84,7 +92,7 @@ func NewController(
 	store *hypergraph.Store,
 	cfg ControllerConfig,
 ) *Controller {
-	return &Controller{
+	c := &Controller{
 		meta:        metaCtrl,
 		mainClient:  mainClient,
 		store:       store,
@@ -92,6 +100,24 @@ func NewController(
 		config:      cfg,
 		recovery:    NewRecoveryManager(cfg.Recovery),
 	}
+
+	// Initialize async executor if enabled
+	if cfg.EnableAsyncExecution {
+		maxParallel := cfg.MaxParallelOps
+		if maxParallel <= 0 {
+			maxParallel = 4
+		}
+		c.asyncExecutor = async.NewExecutor(
+			&controllerOrchestrator{c},
+			async.ExecutorConfig{
+				MaxParallel:    maxParallel,
+				PartialFailure: async.ContinueOnError,
+				TimeoutPerOp:   30 * time.Second,
+			},
+		)
+	}
+
+	return c
 }
 
 // SetTracer sets the trace recorder.
@@ -361,8 +387,36 @@ func (c *Controller) executeDecompose(ctx context.Context, state meta.State, dec
 		return "", 0, fmt.Errorf("decompose: %w", err)
 	}
 
-	// Process each chunk recursively
+	// Use async executor if available, otherwise fall back to serial
 	var results []synthesize.SubCallResult
+	if c.asyncExecutor != nil && len(chunks) > 1 {
+		results, totalTokens, err = c.executeDecomposeAsync(ctx, state, chunks, parentID)
+		if err != nil {
+			return "", totalTokens, err
+		}
+	} else {
+		results, totalTokens = c.executeDecomposeSerial(ctx, state, chunks, parentID)
+	}
+
+	// Synthesize results
+	synthesized, err := c.synthesizer.Synthesize(ctx, state.Task, results)
+	if err != nil {
+		return "", totalTokens, fmt.Errorf("synthesize: %w", err)
+	}
+
+	return synthesized.Response, totalTokens + synthesized.TotalTokensUsed, nil
+}
+
+// executeDecomposeSerial processes chunks sequentially.
+func (c *Controller) executeDecomposeSerial(
+	ctx context.Context,
+	state meta.State,
+	chunks []decompose.Chunk,
+	parentID string,
+) ([]synthesize.SubCallResult, int) {
+	var results []synthesize.SubCallResult
+	var totalTokens int
+
 	for i, chunk := range chunks {
 		childState := meta.State{
 			Task:           chunk.Content,
@@ -387,13 +441,65 @@ func (c *Controller) executeDecompose(ctx context.Context, state meta.State, dec
 		results = append(results, result)
 	}
 
-	// Synthesize results
-	synthesized, err := c.synthesizer.Synthesize(ctx, state.Task, results)
-	if err != nil {
-		return "", totalTokens, fmt.Errorf("synthesize: %w", err)
+	return results, totalTokens
+}
+
+// executeDecomposeAsync processes chunks in parallel using the async executor.
+func (c *Controller) executeDecomposeAsync(
+	ctx context.Context,
+	state meta.State,
+	chunks []decompose.Chunk,
+	parentID string,
+) ([]synthesize.SubCallResult, int, error) {
+	// Build operations for parallel execution
+	ops := make([]*async.Operation, len(chunks))
+	for i, chunk := range chunks {
+		ops[i] = &async.Operation{
+			ID:       fmt.Sprintf("%s-chunk-%d", parentID, i),
+			Task:     chunk.Content,
+			Priority: len(chunks) - i, // Earlier chunks have higher priority
+			ParentID: parentID,
+			State: meta.State{
+				Task:           chunk.Content,
+				ContextTokens:  estimateTokens(chunk.Content),
+				BudgetRemain:   state.BudgetRemain / len(chunks),
+				RecursionDepth: state.RecursionDepth + 1,
+				MaxDepth:       state.MaxDepth,
+			},
+		}
 	}
 
-	return synthesized.Response, totalTokens + synthesized.TotalTokensUsed, nil
+	// Execute in parallel
+	execResult, err := c.asyncExecutor.ExecuteParallel(ctx, ops)
+	if err != nil {
+		return nil, 0, fmt.Errorf("async execution: %w", err)
+	}
+
+	// Convert results to synthesizer format, preserving order
+	results := make([]synthesize.SubCallResult, len(chunks))
+	for i, chunk := range chunks {
+		opID := fmt.Sprintf("%s-chunk-%d", parentID, i)
+		opResult := execResult.Results[opID]
+
+		result := synthesize.SubCallResult{
+			ID:   fmt.Sprintf("chunk-%d", i),
+			Name: chunk.Name,
+		}
+
+		if opResult != nil {
+			result.Response = opResult.Response
+			result.TokensUsed = opResult.Tokens
+			if opResult.Error != nil {
+				result.Error = opResult.Error.Error()
+			}
+		} else {
+			result.Error = "operation result not found"
+		}
+
+		results[i] = result
+	}
+
+	return results, execResult.TotalTokens, nil
 }
 
 // executeMemoryQuery retrieves context from hypergraph memory.
@@ -589,4 +695,13 @@ var idCounter uint64
 func generateID() string {
 	idCounter++
 	return fmt.Sprintf("rlm-%d-%d", time.Now().UnixNano(), idCounter)
+}
+
+// controllerOrchestrator adapts Controller to the async.Orchestrator interface.
+type controllerOrchestrator struct {
+	c *Controller
+}
+
+func (o *controllerOrchestrator) Orchestrate(ctx context.Context, op *async.Operation) (string, int, error) {
+	return o.c.orchestrate(ctx, op.State, op.ParentID)
 }
