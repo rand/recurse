@@ -49,7 +49,7 @@ __pycache__/
 .Python
 venv/
 .venv/
-ENV/
+/ENV/
 
 # Temporary files
 /tmp/
