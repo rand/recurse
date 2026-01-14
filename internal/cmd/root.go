@@ -37,10 +37,15 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Debug")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().BoolP("yolo", "y", false, "Automatically accept all permissions (dangerous mode)")
+	rootCmd.Flags().Bool("no-tui", false, "Run in non-interactive mode (read prompt from stdin)")
+	rootCmd.Flags().Int("budget", 0, "Token budget limit for this session")
+	rootCmd.Flags().StringP("model", "m", "", "Primary model to use (e.g., claude-sonnet-4-20250514)")
 
 	rootCmd.AddCommand(
 		runCmd,
 		rlmCmd,
+		memoryCmd,
+		configCmd,
 		dirsCmd,
 		projectsCmd,
 		updateProvidersCmd,
@@ -73,10 +78,29 @@ recurse -v
 # Run a single non-interactive prompt
 recurse run "Explain the use of context in Go"
 
+# Run in non-interactive mode (--no-tui)
+echo "Explain context in Go" | recurse --no-tui
+
+# Run with a specific model
+recurse -m claude-sonnet-4-20250514
+
 # Run in dangerous mode (auto-accept all permissions)
 recurse -y
+
+# Memory and config management
+recurse memory stats
+recurse memory search "authentication"
+recurse config show
+recurse config validate
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		noTUI, _ := cmd.Flags().GetBool("no-tui")
+
+		// Handle --no-tui mode
+		if noTUI {
+			return runNonInteractive(cmd, args)
+		}
+
 		app, err := setupAppWithProgressBar(cmd)
 		if err != nil {
 			return err
@@ -286,6 +310,37 @@ func createDotCrushDir(dir string) error {
 	}
 
 	return nil
+}
+
+// runNonInteractive handles --no-tui mode, reading prompts from stdin.
+func runNonInteractive(cmd *cobra.Command, args []string) error {
+	app, err := setupApp(cmd)
+	if err != nil {
+		return err
+	}
+	defer app.Shutdown()
+
+	if !app.Config().IsConfigured() {
+		return fmt.Errorf("no providers configured - please run 'recurse' to set up a provider interactively")
+	}
+
+	// Read prompt from arguments or stdin
+	prompt := strings.Join(args, " ")
+
+	prompt, err = MaybePrependStdin(prompt)
+	if err != nil {
+		slog.Error("Failed to read from stdin", "error", err)
+		return err
+	}
+
+	if prompt == "" {
+		return fmt.Errorf("no prompt provided - use: recurse --no-tui \"your prompt\" or pipe via stdin")
+	}
+
+	event.SetNonInteractive(true)
+	event.AppInitialized()
+
+	return app.RunNonInteractive(cmd.Context(), os.Stdout, prompt, false)
 }
 
 func shouldQueryTerminalVersion(env uv.Environ) bool {
