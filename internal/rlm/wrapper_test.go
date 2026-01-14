@@ -836,7 +836,7 @@ func TestGenerateRLMSystemPrompt_TaskTypeGuidance(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prompt := w.generateRLMSystemPrompt(loaded, tt.classification)
+			prompt := w.generateRLMSystemPrompt(loaded, tt.classification, nil)
 
 			for _, want := range tt.wantContains {
 				assert.Contains(t, prompt, want, "prompt should contain %q", want)
@@ -860,7 +860,7 @@ func TestGenerateRLMSystemPrompt_EfficiencyEmphasis(t *testing.T) {
 		},
 	}
 
-	prompt := w.generateRLMSystemPrompt(loaded, nil)
+	prompt := w.generateRLMSystemPrompt(loaded, nil, nil)
 
 	// Check for efficiency emphasis
 	assert.Contains(t, prompt, "Efficiency First")
@@ -870,6 +870,58 @@ func TestGenerateRLMSystemPrompt_EfficiencyEmphasis(t *testing.T) {
 
 	// Check that examples are concise (should have FINAL in them)
 	assert.Contains(t, prompt, "FINAL(")
+}
+
+// TestGenerateRLMSystemPrompt_WithSuggestion tests that REPL suggestions are included.
+func TestGenerateRLMSystemPrompt_WithSuggestion(t *testing.T) {
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+
+	loaded := &LoadedContext{
+		Variables: map[string]VariableInfo{
+			"data": {Description: "Data", TokenEstimate: 500},
+		},
+	}
+
+	suggestion := &REPLSuggestion{
+		Pattern:    "count_occurrences",
+		Approach:   "Use Counter to count items precisely",
+		CodeHint:   "from collections import Counter",
+		Confidence: 0.9,
+		Variables:  []string{"error"},
+	}
+
+	prompt := w.generateRLMSystemPrompt(loaded, nil, suggestion)
+
+	// Check that suggestion is included
+	assert.Contains(t, prompt, "Computation Suggestion")
+	assert.Contains(t, prompt, "count_occurrences")
+	assert.Contains(t, prompt, "Use Counter to count items precisely")
+	assert.Contains(t, prompt, "from collections import Counter")
+}
+
+// TestGenerateRLMSystemPrompt_LowConfidenceSuggestionOmitted tests low confidence suggestions are omitted.
+func TestGenerateRLMSystemPrompt_LowConfidenceSuggestionOmitted(t *testing.T) {
+	svc := &Service{}
+	w := NewWrapper(svc, DefaultWrapperConfig())
+
+	loaded := &LoadedContext{
+		Variables: map[string]VariableInfo{
+			"data": {Description: "Data", TokenEstimate: 500},
+		},
+	}
+
+	suggestion := &REPLSuggestion{
+		Pattern:    "weak_pattern",
+		Approach:   "Maybe try this approach",
+		Confidence: 0.5, // Below 0.7 threshold
+	}
+
+	prompt := w.generateRLMSystemPrompt(loaded, nil, suggestion)
+
+	// Check that low-confidence suggestion is NOT included
+	assert.NotContains(t, prompt, "Computation Suggestion")
+	assert.NotContains(t, prompt, "weak_pattern")
 }
 
 // TestPrepareContextWithOptions_ModeOverride tests explicit mode override.

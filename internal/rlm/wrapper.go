@@ -23,6 +23,9 @@ type Wrapper struct {
 	classifier    *TaskClassifier
 	llmClassifier *LLMClassifier
 
+	// Proactive computation advisor
+	computationAdvisor *ComputationAdvisor
+
 	// Thresholds for when to use RLM mode
 	minContextTokensForRLM            int
 	minContextTokensForComputational  int // Lower threshold for computational tasks
@@ -107,6 +110,9 @@ func NewWrapper(svc *Service, cfg WrapperConfig) *Wrapper {
 	if !cfg.DisableClassifier {
 		w.classifier = NewTaskClassifier()
 	}
+
+	// Initialize computation advisor for proactive REPL suggestions
+	w.computationAdvisor = NewComputationAdvisor()
 
 	return w
 }
@@ -497,8 +503,14 @@ func (w *Wrapper) prepareRLMMode(ctx context.Context, prompt string, contexts []
 		slog.Warn("Failed to store user query in REPL", "error", err)
 	}
 
+	// Generate REPL suggestion from computation advisor
+	var replSuggestion *REPLSuggestion
+	if w.computationAdvisor != nil {
+		replSuggestion = w.computationAdvisor.SuggestREPL(prompt, contexts)
+	}
+
 	// Generate RLM system prompt with task-type-specific guidance
-	result.SystemPrompt = w.generateRLMSystemPrompt(loaded, classification)
+	result.SystemPrompt = w.generateRLMSystemPrompt(loaded, classification, replSuggestion)
 
 	// Generate minimal prompt that references externalized context
 	result.FinalPrompt = w.generateRLMPrompt(prompt, loaded)
@@ -549,7 +561,7 @@ func (w *Wrapper) prepareDirectMode(prompt string, contexts []ContextSource) *Pr
 }
 
 // generateRLMSystemPrompt generates the system prompt for RLM mode.
-func (w *Wrapper) generateRLMSystemPrompt(loaded *LoadedContext, classification *Classification) string {
+func (w *Wrapper) generateRLMSystemPrompt(loaded *LoadedContext, classification *Classification, suggestion *REPLSuggestion) string {
 	var sb strings.Builder
 
 	sb.WriteString(`You are operating in RLM (Recursive Language Model) mode.
@@ -563,6 +575,12 @@ Context has been externalized to Python variables. Use code execution to process
 - Only use llm_call() when you need reasoning about content, not mechanical operations
 
 `)
+
+	// Add proactive computation suggestion if available
+	if suggestion != nil && suggestion.Confidence >= 0.7 {
+		sb.WriteString(suggestion.FormatForPrompt())
+		sb.WriteString("\n")
+	}
 
 	// Add task-type-specific guidance
 	if classification != nil && classification.Confidence >= 0.5 {
