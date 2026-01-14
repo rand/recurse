@@ -347,3 +347,205 @@ func TestRLMServiceIntegration(t *testing.T) {
 	assert.NotNil(t, svc.SubCallRouter())
 	assert.NotNil(t, svc.Orchestrator())
 }
+
+// e2eMockLLMClient tracks calls and provides configurable responses for end-to-end tests.
+type e2eMockLLMClient struct {
+	metaResponses []string // Responses for meta-controller (orchestration decisions)
+	mainResponses []string // Responses for main LLM (actual content)
+	callLog       []e2eCall
+	metaIndex     int
+	mainIndex     int
+}
+
+type e2eCall struct {
+	Type   string // "meta" or "main"
+	Prompt string
+}
+
+func newE2EMockClient(metaResp, mainResp []string) *e2eMockLLMClient {
+	return &e2eMockLLMClient{
+		metaResponses: metaResp,
+		mainResponses: mainResp,
+		callLog:       []e2eCall{},
+	}
+}
+
+func (m *e2eMockLLMClient) Complete(ctx context.Context, prompt string, maxTokens int) (string, error) {
+	// Detect if this is a meta-controller call (orchestration decision)
+	promptLower := strings.ToLower(prompt)
+	isMeta := strings.Contains(promptLower, "action") &&
+		(strings.Contains(promptLower, "direct") ||
+		 strings.Contains(promptLower, "decompose") ||
+		 strings.Contains(promptLower, "memory_query"))
+
+	if isMeta {
+		m.callLog = append(m.callLog, e2eCall{Type: "meta", Prompt: prompt})
+		if m.metaIndex < len(m.metaResponses) {
+			resp := m.metaResponses[m.metaIndex]
+			m.metaIndex++
+			return resp, nil
+		}
+		return `{"action": "DIRECT", "reasoning": "Default"}`, nil
+	}
+
+	// Main LLM call for actual response generation
+	m.callLog = append(m.callLog, e2eCall{Type: "main", Prompt: prompt})
+	if m.mainIndex < len(m.mainResponses) {
+		resp := m.mainResponses[m.mainIndex]
+		m.mainIndex++
+		return resp, nil
+	}
+	return "Mock main LLM response", nil
+}
+
+// TestExecuteEndToEnd tests the complete Execute flow.
+func TestExecuteEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	t.Run("direct_action_generates_response", func(t *testing.T) {
+		// Setup mock client: meta returns DIRECT, main returns actual answer
+		mockClient := newE2EMockClient(
+			[]string{`{"action": "DIRECT", "reasoning": "Simple factual question"}`},
+			[]string{"The answer is 4."},
+		)
+
+		store, err := hypergraph.NewStore(hypergraph.Options{})
+		require.NoError(t, err)
+		defer store.Close()
+
+		metaCtrl := meta.NewController(mockClient, meta.DefaultConfig())
+		cfg := DefaultControllerConfig()
+		cfg.StoreDecisions = true
+		ctrl := NewController(metaCtrl, mockClient, store, cfg)
+
+		// Execute a simple question
+		result, err := ctrl.Execute(ctx, "What is 2+2?")
+		require.NoError(t, err)
+
+		// Verify response is NOT echoed input
+		assert.NotEqual(t, "What is 2+2?", result.Response, "Response should not echo input")
+		assert.Contains(t, result.Response, "4", "Response should contain the answer")
+
+		// Verify both meta and main LLM were called
+		var metaCalls, mainCalls int
+		for _, call := range mockClient.callLog {
+			if call.Type == "meta" {
+				metaCalls++
+			} else {
+				mainCalls++
+			}
+		}
+		assert.GreaterOrEqual(t, metaCalls, 1, "Meta-controller should be called")
+		assert.GreaterOrEqual(t, mainCalls, 1, "Main LLM should be called for response")
+	})
+
+	t.Run("memory_context_used", func(t *testing.T) {
+		mockClient := newE2EMockClient(
+			[]string{`{"action": "DIRECT", "reasoning": "Use memory context"}`},
+			[]string{"Based on the context, the project uses Go."},
+		)
+
+		store, err := hypergraph.NewStore(hypergraph.Options{})
+		require.NoError(t, err)
+		defer store.Close()
+
+		// Pre-populate memory with a fact
+		fact := hypergraph.NewNode(hypergraph.NodeTypeFact, "The project uses Go language")
+		fact.Confidence = 0.9
+		require.NoError(t, store.CreateNode(ctx, fact))
+
+		metaCtrl := meta.NewController(mockClient, meta.DefaultConfig())
+		cfg := DefaultControllerConfig()
+		cfg.StoreDecisions = false
+		ctrl := NewController(metaCtrl, mockClient, store, cfg)
+
+		// Execute query that should match the stored fact
+		result, err := ctrl.Execute(ctx, "What language does this project use?")
+		require.NoError(t, err)
+		assert.NotEmpty(t, result.Response)
+
+		// Verify fact was accessed (access count incremented)
+		node, err := store.GetNode(ctx, fact.ID)
+		require.NoError(t, err)
+		assert.Greater(t, node.AccessCount, 0, "Fact should have been accessed")
+	})
+
+	t.Run("decision_stored_in_memory", func(t *testing.T) {
+		mockClient := newE2EMockClient(
+			[]string{`{"action": "DIRECT", "reasoning": "Store this decision"}`},
+			[]string{"Decision stored response."},
+		)
+
+		store, err := hypergraph.NewStore(hypergraph.Options{})
+		require.NoError(t, err)
+		defer store.Close()
+
+		metaCtrl := meta.NewController(mockClient, meta.DefaultConfig())
+		cfg := DefaultControllerConfig()
+		cfg.StoreDecisions = true
+		ctrl := NewController(metaCtrl, mockClient, store, cfg)
+
+		// Execute task
+		_, err = ctrl.Execute(ctx, "Important task to remember")
+		require.NoError(t, err)
+
+		// Verify decision node was created
+		nodes, err := store.ListNodes(ctx, hypergraph.NodeFilter{
+			Types: []hypergraph.NodeType{hypergraph.NodeTypeDecision},
+			Limit: 10,
+		})
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, len(nodes), 1, "Decision node should be created")
+	})
+
+	t.Run("trace_events_recorded", func(t *testing.T) {
+		mockClient := newE2EMockClient(
+			[]string{`{"action": "DIRECT", "reasoning": "Traced task"}`},
+			[]string{"Traced response."},
+		)
+
+		store, err := hypergraph.NewStore(hypergraph.Options{})
+		require.NoError(t, err)
+		defer store.Close()
+
+		metaCtrl := meta.NewController(mockClient, meta.DefaultConfig())
+		cfg := DefaultControllerConfig()
+		cfg.TraceEnabled = true
+		ctrl := NewController(metaCtrl, mockClient, store, cfg)
+
+		// Attach a trace recorder
+		tracer := &mockTraceRecorder{}
+		ctrl.SetTracer(tracer)
+
+		// Execute task
+		_, err = ctrl.Execute(ctx, "Trace this task")
+		require.NoError(t, err)
+
+		// Verify trace events were recorded
+		assert.GreaterOrEqual(t, len(tracer.events), 1, "Trace events should be recorded")
+	})
+
+	t.Run("execution_result_fields", func(t *testing.T) {
+		mockClient := newE2EMockClient(
+			[]string{`{"action": "DIRECT", "reasoning": "Complete test"}`},
+			[]string{"Complete test response."},
+		)
+
+		store, err := hypergraph.NewStore(hypergraph.Options{})
+		require.NoError(t, err)
+		defer store.Close()
+
+		metaCtrl := meta.NewController(mockClient, meta.DefaultConfig())
+		ctrl := NewController(metaCtrl, mockClient, store, DefaultControllerConfig())
+
+		result, err := ctrl.Execute(ctx, "Test task")
+		require.NoError(t, err)
+
+		// Verify all result fields are populated
+		assert.Equal(t, "Test task", result.Task)
+		assert.NotEmpty(t, result.Response)
+		assert.Greater(t, result.TotalTokens, 0)
+		assert.Greater(t, result.Duration, int64(0))
+	})
+}
