@@ -173,3 +173,40 @@ func TestManager_PreloadedModules(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.ReturnVal)
 }
+
+func TestManager_DataScienceLibraries(t *testing.T) {
+	m, err := NewManager(Options{
+		Sandbox: DefaultSandboxConfig(),
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+	defer m.Stop()
+
+	// Test numpy
+	result, err := m.Execute(ctx, `import numpy as np; np.array([1,2,3]).mean()`)
+	require.NoError(t, err)
+	assert.Empty(t, result.Error, "numpy should work")
+	assert.Equal(t, "np.float64(2.0)", result.ReturnVal)
+
+	// Test pandas
+	result, err = m.Execute(ctx, `import pandas as pd; len(pd.DataFrame({'x': [1,2,3]}))`)
+	require.NoError(t, err)
+	assert.Empty(t, result.Error, "pandas should work")
+	assert.Equal(t, "3", result.ReturnVal)
+
+	// Test polars
+	result, err = m.Execute(ctx, `import polars as pl; pl.DataFrame({'a': [1,2,3]}).shape`)
+	require.NoError(t, err)
+	assert.Empty(t, result.Error, "polars should work")
+	assert.Equal(t, "(3, 1)", result.ReturnVal)
+
+	// Test seaborn (just import check - datasets need network)
+	result, err = m.Execute(ctx, `import seaborn as sns; sns.__name__`)
+	require.NoError(t, err)
+	assert.Empty(t, result.Error, "seaborn should work")
+	assert.Equal(t, "'seaborn'", result.ReturnVal)
+}

@@ -70,7 +70,14 @@ type Options struct {
 // NewManager creates a new REPL manager with the given options.
 func NewManager(opts Options) (*Manager, error) {
 	if opts.PythonPath == "" {
-		opts.PythonPath = "python3"
+		// Try to use uv-managed venv Python, fall back to system python3
+		pythonPath, err := EnsureEnv(context.Background())
+		if err != nil {
+			slog.Debug("Failed to ensure uv env, using system python3", "error", err)
+			opts.PythonPath = "python3"
+		} else {
+			opts.PythonPath = pythonPath
+		}
 	}
 
 	if opts.WorkDir == "" {
@@ -194,7 +201,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// Wait for ready signal
 	if err := m.waitReady(ctx); err != nil {
-		m.Stop()
+		m.stopLocked()
 		return fmt.Errorf("wait ready: %w", err)
 	}
 
@@ -243,7 +250,11 @@ func (m *Manager) waitReady(ctx context.Context) error {
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.stopLocked()
+}
 
+// stopLocked terminates the REPL subprocess. Caller must hold m.mu.
+func (m *Manager) stopLocked() error {
 	if !m.running.Load() {
 		return nil
 	}

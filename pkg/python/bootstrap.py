@@ -16,7 +16,9 @@ import os
 import pathlib
 import re
 import resource
+import shutil
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -100,6 +102,198 @@ try:
 except ImportError:
     sns = None
     SEABORN_AVAILABLE = False
+
+
+# =============================================================================
+# CLI Tool Wrappers
+# =============================================================================
+# These functions provide access to Python development tools (uv, ruff, ty)
+# from within the REPL.
+
+
+def _find_tool(name: str) -> str | None:
+    """Find a CLI tool, checking venv bin first, then PATH."""
+    # Check venv bin directory first
+    venv_bin = os.path.join(os.path.dirname(sys.executable), name)
+    if os.path.isfile(venv_bin) and os.access(venv_bin, os.X_OK):
+        return venv_bin
+    # Fall back to PATH
+    return shutil.which(name)
+
+
+def uv(*args: str, capture: bool = True) -> str:
+    """
+    Run uv (Python package manager) with the given arguments.
+
+    Args:
+        *args: Command-line arguments to pass to uv
+        capture: If True, capture and return output. If False, print directly.
+
+    Returns:
+        Command output as a string (if capture=True)
+
+    Examples:
+        >>> uv("pip", "list")  # List installed packages
+        >>> uv("pip", "install", "requests")  # Install a package
+        >>> uv("run", "python", "-c", "print('hello')")  # Run Python code
+        >>> uv("--version")  # Show uv version
+    """
+    tool_path = _find_tool("uv")
+    if not tool_path:
+        raise RuntimeError("uv not found. Install with: curl -LsSf https://astral.sh/uv/install.sh | sh")
+
+    result = subprocess.run(
+        [tool_path, *args],
+        capture_output=capture,
+        text=True,
+    )
+
+    if capture:
+        output = result.stdout
+        if result.stderr:
+            output += result.stderr
+        if result.returncode != 0:
+            raise RuntimeError(f"uv failed (exit {result.returncode}):\n{output}")
+        return output
+    else:
+        if result.returncode != 0:
+            raise RuntimeError(f"uv failed with exit code {result.returncode}")
+        return ""
+
+
+def ruff(*args: str, capture: bool = True) -> str:
+    """
+    Run ruff (Python linter/formatter) with the given arguments.
+
+    Args:
+        *args: Command-line arguments to pass to ruff
+        capture: If True, capture and return output. If False, print directly.
+
+    Returns:
+        Command output as a string (if capture=True)
+
+    Examples:
+        >>> ruff("check", "myfile.py")  # Lint a file
+        >>> ruff("check", ".", "--fix")  # Lint and fix current directory
+        >>> ruff("format", "myfile.py")  # Format a file
+        >>> ruff("format", ".", "--check")  # Check formatting without changes
+        >>> ruff("--version")  # Show ruff version
+    """
+    tool_path = _find_tool("ruff")
+    if not tool_path:
+        raise RuntimeError("ruff not found. Install with: uv pip install ruff")
+
+    result = subprocess.run(
+        [tool_path, *args],
+        capture_output=capture,
+        text=True,
+    )
+
+    if capture:
+        output = result.stdout
+        if result.stderr:
+            output += result.stderr
+        # ruff returns non-zero for lint errors, which is expected behavior
+        return output
+    else:
+        return ""
+
+
+def ty(*args: str, capture: bool = True) -> str:
+    """
+    Run ty (Python type checker) with the given arguments.
+
+    Args:
+        *args: Command-line arguments to pass to ty
+        capture: If True, capture and return output. If False, print directly.
+
+    Returns:
+        Command output as a string (if capture=True)
+
+    Examples:
+        >>> ty("check", "myfile.py")  # Type check a file
+        >>> ty("check", ".")  # Type check current directory
+        >>> ty("--version")  # Show ty version
+    """
+    tool_path = _find_tool("ty")
+    if not tool_path:
+        raise RuntimeError("ty not found. Install with: uv pip install ty")
+
+    result = subprocess.run(
+        [tool_path, *args],
+        capture_output=capture,
+        text=True,
+    )
+
+    if capture:
+        output = result.stdout
+        if result.stderr:
+            output += result.stderr
+        # ty returns non-zero for type errors, which is expected behavior
+        return output
+    else:
+        return ""
+
+
+def lint(path: str = ".", fix: bool = False) -> str:
+    """
+    Convenience function to lint Python code with ruff.
+
+    Args:
+        path: File or directory to lint (default: current directory)
+        fix: If True, automatically fix issues where possible
+
+    Returns:
+        Lint output
+
+    Examples:
+        >>> lint()  # Lint current directory
+        >>> lint("myfile.py")  # Lint a specific file
+        >>> lint(fix=True)  # Lint and fix
+    """
+    args = ["check", path]
+    if fix:
+        args.append("--fix")
+    return ruff(*args)
+
+
+def fmt(path: str = ".", check: bool = False) -> str:
+    """
+    Convenience function to format Python code with ruff.
+
+    Args:
+        path: File or directory to format (default: current directory)
+        check: If True, check formatting without making changes
+
+    Returns:
+        Format output
+
+    Examples:
+        >>> fmt()  # Format current directory
+        >>> fmt("myfile.py")  # Format a specific file
+        >>> fmt(check=True)  # Check formatting only
+    """
+    args = ["format", path]
+    if check:
+        args.append("--check")
+    return ruff(*args)
+
+
+def typecheck(path: str = ".") -> str:
+    """
+    Convenience function to type check Python code with ty.
+
+    Args:
+        path: File or directory to type check (default: current directory)
+
+    Returns:
+        Type check output
+
+    Examples:
+        >>> typecheck()  # Type check current directory
+        >>> typecheck("myfile.py")  # Type check a specific file
+    """
+    return ty("check", path)
 
 
 # =============================================================================
@@ -188,7 +382,7 @@ def grep(ctx, pattern: str, context_lines: int = 0, ignore_case: bool = True) ->
         List of dicts with 'line_num', 'line', 'context_before', 'context_after'
 
     Example:
-        >>> matches = grep(context, r"def \w+")
+        >>> matches = grep(context, r"def \\w+")
         >>> matches = grep(context, "error", context_lines=2)
     """
     content = ctx.content if isinstance(ctx, RLMContext) else str(ctx)
@@ -1012,6 +1206,13 @@ class REPLNamespace:
             "memory_relate": memory_relate,
             "disable_memory": disable_memory,
             "enable_memory": enable_memory,
+            # CLI tools
+            "uv": uv,
+            "ruff": ruff,
+            "ty": ty,
+            "lint": lint,
+            "fmt": fmt,
+            "typecheck": typecheck,
         }
         if PYDANTIC_AVAILABLE:
             self._globals["pydantic"] = pydantic
@@ -1075,6 +1276,8 @@ class REPLNamespace:
             "re", "json", "ast", "pathlib", "itertools", "collections", "Path", "pydantic",
             # Data science libraries
             "np", "numpy", "pd", "pandas", "pl", "polars", "sns", "seaborn",
+            # CLI tools
+            "uv", "ruff", "ty", "lint", "fmt", "typecheck",
             # RLM helper functions
             "RLMContext", "peek", "grep", "partition", "partition_by_lines",
             "extract_functions", "count_tokens_approx", "summarize", "map_reduce",
