@@ -374,6 +374,9 @@ type Config struct {
 
 	Tools Tools `json:"tools,omitzero" jsonschema:"description=Tool configurations"`
 
+	// Hallucination detection configuration [SPEC-08.34-35]
+	Hallucination *HallucinationConfig `json:"hallucination,omitempty" jsonschema:"description=Hallucination detection configuration"`
+
 	Agents map[string]Agent `json:"-"`
 
 	// Internal

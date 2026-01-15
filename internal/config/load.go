@@ -397,6 +397,12 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 	if c.Options.InitializeAs == "" {
 		c.Options.InitializeAs = defaultInitializeAs
 	}
+
+	// Set hallucination detection defaults [SPEC-08.34-35]
+	if c.Hallucination == nil {
+		defaults := DefaultHallucinationConfig()
+		c.Hallucination = &defaults
+	}
 }
 
 // applyLSPDefaults applies default values from powernap to LSP configurations
