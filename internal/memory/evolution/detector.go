@@ -64,9 +64,11 @@ type PatternDetector struct {
 }
 
 // OutcomeStore abstracts retrieval outcome storage.
+// Note: RecordOutcome takes hypergraph.RetrievalOutcome because it's called from search.
+// Query methods return evolution.RetrievalOutcome which includes the database ID.
 type OutcomeStore interface {
-	// RecordOutcome records a retrieval outcome.
-	RecordOutcome(ctx context.Context, outcome RetrievalOutcome) error
+	// RecordOutcome records a retrieval outcome (implements hypergraph.OutcomeRecorder).
+	RecordOutcome(ctx context.Context, outcome hypergraph.RetrievalOutcome) error
 
 	// QueryOutcomes retrieves outcomes within a time window.
 	QueryOutcomes(ctx context.Context, since time.Time) ([]RetrievalOutcome, error)

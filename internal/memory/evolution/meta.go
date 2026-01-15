@@ -412,7 +412,7 @@ func (m *MetaEvolutionManager) GetProposalStats(ctx context.Context) (*ProposalS
 }
 
 // RecordOutcome records a retrieval outcome for pattern detection.
-func (m *MetaEvolutionManager) RecordOutcome(ctx context.Context, outcome RetrievalOutcome) error {
+func (m *MetaEvolutionManager) RecordOutcome(ctx context.Context, outcome hypergraph.RetrievalOutcome) error {
 	if m.outcomeStore == nil {
 		return nil
 	}

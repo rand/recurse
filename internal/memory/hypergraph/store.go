@@ -170,6 +170,14 @@ func (s *Store) Path() string {
 	return s.path
 }
 
+// SetOutcomeRecorder sets the outcome recorder for meta-evolution tracking.
+// This must be called after NewStore if outcome recording is desired.
+func (s *Store) SetOutcomeRecorder(recorder OutcomeRecorder) {
+	if s.hybridSearcher != nil {
+		s.hybridSearcher.SetOutcomeRecorder(recorder)
+	}
+}
+
 // Stats returns database statistics.
 type Stats struct {
 	NodeCount      int64            `json:"node_count"`

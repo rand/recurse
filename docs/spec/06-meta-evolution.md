@@ -138,17 +138,17 @@ Actions:
 
 ## Implementation Tasks
 
-- [ ] Add retrieval_outcomes table
-- [ ] Instrument memory queries for outcome logging
-- [ ] Implement PatternDetector
-- [ ] Add clustering analysis for subtype detection
-- [ ] Create ProposalGenerator
-- [ ] Build proposal storage and lifecycle
-- [ ] Add TUI Proposals tab
-- [ ] Implement approval workflow
-- [ ] Add audit logging
-- [ ] Wire into LifecycleManager
-- [ ] Write tests
+- [x] Add retrieval_outcomes table (`internal/memory/hypergraph/schema.sql`)
+- [x] Instrument memory queries for outcome logging (`internal/memory/hypergraph/hybrid_search.go`)
+- [x] Implement PatternDetector (`internal/memory/evolution/detector.go`)
+- [x] Add clustering analysis for subtype detection (`internal/memory/evolution/detector.go`)
+- [x] Create ProposalGenerator (`internal/memory/evolution/proposals.go`)
+- [x] Build proposal storage and lifecycle (`internal/memory/evolution/proposal_store.go`, `internal/memory/evolution/outcome_store.go`)
+- [x] Add TUI Proposals tab (`internal/tui/components/dialogs/memory/memory.go`)
+- [x] Implement approval workflow (`internal/memory/evolution/meta.go`)
+- [x] Add audit logging (`internal/memory/evolution/audit.go`)
+- [x] Wire into LifecycleManager (`internal/rlm/service.go`)
+- [x] Write tests (`internal/memory/evolution/*_test.go`)
 
 ## Dependencies
 

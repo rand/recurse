@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rand/recurse/internal/memory/hypergraph"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,10 +23,22 @@ func newMockOutcomeStore() *mockOutcomeStore {
 	}
 }
 
-func (m *mockOutcomeStore) RecordOutcome(_ context.Context, outcome RetrievalOutcome) error {
+func (m *mockOutcomeStore) RecordOutcome(_ context.Context, outcome hypergraph.RetrievalOutcome) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.outcomes = append(m.outcomes, outcome)
+	// Convert hypergraph.RetrievalOutcome to evolution.RetrievalOutcome
+	m.outcomes = append(m.outcomes, RetrievalOutcome{
+		Timestamp:      outcome.Timestamp,
+		QueryHash:      outcome.QueryHash,
+		QueryType:      outcome.QueryType,
+		NodeID:         outcome.NodeID,
+		NodeType:       outcome.NodeType,
+		NodeSubtype:    outcome.NodeSubtype,
+		RelevanceScore: outcome.RelevanceScore,
+		WasUsed:        outcome.WasUsed,
+		ContextTokens:  outcome.ContextTokens,
+		LatencyMs:      outcome.LatencyMs,
+	})
 	return nil
 }
 
@@ -158,7 +171,7 @@ func TestPatternDetector_DetectTypeMismatches(t *testing.T) {
 	// Add outcomes that show a type mismatch pattern
 	// "fact" nodes being retrieved but low relevance for "computational" queries
 	for i := 0; i < 10; i++ {
-		outcomeStore.RecordOutcome(ctx, RetrievalOutcome{
+		outcomeStore.RecordOutcome(ctx, hypergraph.RetrievalOutcome{
 			Timestamp:      now,
 			QueryType:      "computational",
 			NodeID:         "node-" + string(rune('a'+i)),
@@ -199,7 +212,7 @@ func TestPatternDetector_DetectRetrievalMismatch(t *testing.T) {
 
 	// Add outcomes showing poor hit rate for analytical queries
 	for i := 0; i < 20; i++ {
-		outcomeStore.RecordOutcome(ctx, RetrievalOutcome{
+		outcomeStore.RecordOutcome(ctx, hypergraph.RetrievalOutcome{
 			Timestamp:      now,
 			QueryType:      "analytical",
 			NodeID:         "node-" + string(rune('a'+i%10)),

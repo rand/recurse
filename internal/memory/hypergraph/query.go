@@ -25,6 +25,9 @@ type SearchOptions struct {
 
 	// Maximum number of results
 	Limit int
+
+	// Query type for meta-evolution tracking (computational, retrieval, analytical, transformational)
+	QueryType string
 }
 
 // SearchByContent performs a text search on node content.

@@ -2,6 +2,8 @@ package hypergraph
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"sort"
 	"time"
@@ -14,22 +16,44 @@ const (
 	defaultRRFConstant = 60   // Standard RRF constant
 )
 
+// RetrievalOutcome represents the outcome of a single node retrieval.
+// This is used for meta-evolution tracking.
+type RetrievalOutcome struct {
+	QueryHash      string    // Hash of the query for grouping
+	QueryType      string    // computational, retrieval, analytical, transformational
+	NodeID         string    // Retrieved node ID
+	NodeType       string    // Type of the retrieved node
+	NodeSubtype    string    // Subtype if any
+	RelevanceScore float64   // 0.0-1.0, from search score
+	WasUsed        bool      // Did the retrieved content get used?
+	ContextTokens  int       // Token count of the context
+	LatencyMs      int       // Query latency in milliseconds
+	Timestamp      time.Time // When this outcome was recorded
+}
+
+// OutcomeRecorder records retrieval outcomes for meta-evolution.
+type OutcomeRecorder interface {
+	RecordOutcome(ctx context.Context, outcome RetrievalOutcome) error
+}
+
 // HybridSearcher combines keyword and semantic search using Reciprocal Rank Fusion.
 type HybridSearcher struct {
-	store   *Store
-	index   *embeddings.Index
-	alpha   float64 // Weight for semantic search
-	k       int     // RRF constant
-	logger  *slog.Logger
-	metrics *embeddings.EmbeddingMetrics
+	store           *Store
+	index           *embeddings.Index
+	alpha           float64 // Weight for semantic search
+	k               int     // RRF constant
+	logger          *slog.Logger
+	metrics         *embeddings.EmbeddingMetrics
+	outcomeRecorder OutcomeRecorder
 }
 
 // HybridConfig configures the hybrid searcher.
 type HybridConfig struct {
-	Alpha   float64 // Semantic weight (0=keyword only, 1=semantic only, default: 0.7)
-	K       int     // RRF constant (default: 60)
-	Logger  *slog.Logger
-	Metrics *embeddings.EmbeddingMetrics
+	Alpha           float64 // Semantic weight (0=keyword only, 1=semantic only, default: 0.7)
+	K               int     // RRF constant (default: 60)
+	Logger          *slog.Logger
+	Metrics         *embeddings.EmbeddingMetrics
+	OutcomeRecorder OutcomeRecorder // Optional: records outcomes for meta-evolution
 }
 
 // NewHybridSearcher creates a new hybrid searcher.
@@ -45,13 +69,19 @@ func NewHybridSearcher(store *Store, index *embeddings.Index, cfg HybridConfig) 
 	}
 
 	return &HybridSearcher{
-		store:   store,
-		index:   index,
-		alpha:   cfg.Alpha,
-		k:       cfg.K,
-		logger:  cfg.Logger,
-		metrics: cfg.Metrics,
+		store:           store,
+		index:           index,
+		alpha:           cfg.Alpha,
+		k:               cfg.K,
+		logger:          cfg.Logger,
+		metrics:         cfg.Metrics,
+		outcomeRecorder: cfg.OutcomeRecorder,
 	}
+}
+
+// SetOutcomeRecorder sets the outcome recorder for meta-evolution tracking.
+func (h *HybridSearcher) SetOutcomeRecorder(recorder OutcomeRecorder) {
+	h.outcomeRecorder = recorder
 }
 
 // Search performs hybrid keyword + semantic search.
@@ -61,7 +91,9 @@ func (h *HybridSearcher) Search(
 	opts SearchOptions,
 ) ([]*SearchResult, error) {
 	start := time.Now()
+	var latencyMs int
 	defer func() {
+		latencyMs = int(time.Since(start).Milliseconds())
 		if h.metrics != nil {
 			h.metrics.RecordHybridSearch(time.Since(start))
 		}
@@ -104,7 +136,15 @@ func (h *HybridSearcher) Search(
 	fused := h.reciprocalRankFusion(keywordResults, semanticResults, limit)
 
 	// 4. Hydrate nodes if needed (semantic results may only have IDs)
-	return h.hydrateResults(ctx, fused, opts)
+	results, err := h.hydrateResults(ctx, fused, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5. Record outcomes for meta-evolution
+	h.recordOutcomes(ctx, query, results, latencyMs, opts.QueryType)
+
+	return results, nil
 }
 
 // reciprocalRankFusion combines two ranked lists using RRF.
@@ -263,4 +303,42 @@ func (h *HybridSearcher) SetAlpha(alpha float64) {
 // Alpha returns the current semantic weight.
 func (h *HybridSearcher) Alpha() float64 {
 	return h.alpha
+}
+
+// hashQuery creates a short hash of a query for outcome grouping.
+func hashQuery(query string) string {
+	h := sha256.Sum256([]byte(query))
+	return hex.EncodeToString(h[:8]) // First 8 bytes = 16 hex chars
+}
+
+// recordOutcomes records retrieval outcomes for meta-evolution tracking.
+func (h *HybridSearcher) recordOutcomes(ctx context.Context, query string, results []*SearchResult, latencyMs int, queryType string) {
+	if h.outcomeRecorder == nil || len(results) == 0 {
+		return
+	}
+
+	queryHash := hashQuery(query)
+	if queryType == "" {
+		queryType = "retrieval" // Default query type
+	}
+
+	for _, result := range results {
+		outcome := RetrievalOutcome{
+			Timestamp:      time.Now(),
+			QueryHash:      queryHash,
+			QueryType:      queryType,
+			NodeID:         result.Node.ID,
+			NodeType:       string(result.Node.Type),
+			NodeSubtype:    result.Node.Subtype,
+			RelevanceScore: result.Score,
+			WasUsed:        false, // Will be updated via feedback
+			LatencyMs:      latencyMs,
+		}
+
+		if err := h.outcomeRecorder.RecordOutcome(ctx, outcome); err != nil {
+			h.logger.Debug("failed to record outcome",
+				"node_id", result.Node.ID,
+				"error", err)
+		}
+	}
 }

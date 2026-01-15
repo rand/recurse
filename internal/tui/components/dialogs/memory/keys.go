@@ -12,6 +12,10 @@ type KeyMap struct {
 	Search,
 	Recent,
 	Stats,
+	Proposals,
+	Approve,
+	Reject,
+	Defer,
 	Close key.Binding
 }
 
@@ -42,6 +46,22 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("s"),
 			key.WithHelp("s", "stats"),
 		),
+		Proposals: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "proposals"),
+		),
+		Approve: key.NewBinding(
+			key.WithKeys("a"),
+			key.WithHelp("a", "approve"),
+		),
+		Reject: key.NewBinding(
+			key.WithKeys("x"),
+			key.WithHelp("x", "reject"),
+		),
+		Defer: key.NewBinding(
+			key.WithKeys("d"),
+			key.WithHelp("d", "defer"),
+		),
 		Close: key.NewBinding(
 			key.WithKeys("esc", "q"),
 			key.WithHelp("esc/q", "close"),
@@ -58,6 +78,7 @@ func (k KeyMap) KeyBindings() []key.Binding {
 		k.Search,
 		k.Recent,
 		k.Stats,
+		k.Proposals,
 		k.Close,
 	}
 }

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/rand/recurse/internal/memory/evolution"
 	"github.com/rand/recurse/internal/memory/hypergraph"
 	"github.com/rand/recurse/internal/tui/components/core"
 	"github.com/rand/recurse/internal/tui/components/dialogs"
@@ -35,6 +37,18 @@ type MemoryStats struct {
 	ByTier     map[hypergraph.Tier]int
 }
 
+// ProposalProvider provides access to meta-evolution proposals.
+type ProposalProvider interface {
+	// GetPendingProposals returns pending schema evolution proposals.
+	GetPendingProposals(ctx context.Context) ([]*evolution.Proposal, error)
+	// ApproveProposal approves a proposal for application.
+	ApproveProposal(ctx context.Context, id string) error
+	// RejectProposal rejects a proposal.
+	RejectProposal(ctx context.Context, id, reason string) error
+	// DeferProposal defers a proposal for later review.
+	DeferProposal(ctx context.Context, id string) error
+}
+
 // MemoryDialog interface for the memory inspector dialog.
 type MemoryDialog interface {
 	dialogs.DialogModel
@@ -54,24 +68,28 @@ const (
 	viewSearch
 	viewStats
 	viewDetails
+	viewProposals
 )
 
 type memoryDialogCmp struct {
-	provider   MemoryProvider
-	wWidth     int
-	wHeight    int
-	width      int
-	keyMap     KeyMap
-	nodesList  MemoryList
-	help       help.Model
-	mode       viewMode
-	stats      MemoryStats
-	selected   *hypergraph.Node
-	searchMode bool
+	provider         MemoryProvider
+	proposalProvider ProposalProvider
+	wWidth           int
+	wHeight          int
+	width            int
+	keyMap           KeyMap
+	nodesList        MemoryList
+	help             help.Model
+	mode             viewMode
+	stats            MemoryStats
+	selected         *hypergraph.Node
+	searchMode       bool
+	proposals        []*evolution.Proposal
+	selectedProposal int
 }
 
 // NewMemoryDialog creates a new memory inspector dialog.
-func NewMemoryDialog(provider MemoryProvider) MemoryDialog {
+func NewMemoryDialog(provider MemoryProvider, proposalProvider ...ProposalProvider) MemoryDialog {
 	t := styles.CurrentTheme()
 	listKeyMap := list.DefaultKeyMap()
 	keyMap := DefaultKeyMap()
@@ -94,12 +112,18 @@ func NewMemoryDialog(provider MemoryProvider) MemoryDialog {
 	help := help.New()
 	help.Styles = t.S().Help
 
+	var pp ProposalProvider
+	if len(proposalProvider) > 0 {
+		pp = proposalProvider[0]
+	}
+
 	return &memoryDialogCmp{
-		provider:  provider,
-		keyMap:    keyMap,
-		nodesList: nodesList,
-		help:      help,
-		mode:      viewRecent,
+		provider:         provider,
+		proposalProvider: pp,
+		keyMap:           keyMap,
+		nodesList:        nodesList,
+		help:             help,
+		mode:             viewRecent,
 	}
 }
 
@@ -136,6 +160,49 @@ func (m *memoryDialogCmp) loadStats() tea.Cmd {
 	}
 }
 
+func (m *memoryDialogCmp) loadProposals() tea.Cmd {
+	return func() tea.Msg {
+		if m.proposalProvider == nil {
+			return proposalsLoadedMsg{}
+		}
+		proposals, err := m.proposalProvider.GetPendingProposals(context.Background())
+		if err != nil {
+			return proposalsLoadedMsg{err: err}
+		}
+		return proposalsLoadedMsg{proposals: proposals}
+	}
+}
+
+func (m *memoryDialogCmp) approveProposal(id string) tea.Cmd {
+	return func() tea.Msg {
+		if m.proposalProvider == nil {
+			return proposalActionMsg{action: "approve", id: id, err: fmt.Errorf("no proposal provider")}
+		}
+		err := m.proposalProvider.ApproveProposal(context.Background(), id)
+		return proposalActionMsg{action: "approve", id: id, err: err}
+	}
+}
+
+func (m *memoryDialogCmp) rejectProposal(id string) tea.Cmd {
+	return func() tea.Msg {
+		if m.proposalProvider == nil {
+			return proposalActionMsg{action: "reject", id: id, err: fmt.Errorf("no proposal provider")}
+		}
+		err := m.proposalProvider.RejectProposal(context.Background(), id, "rejected via TUI")
+		return proposalActionMsg{action: "reject", id: id, err: err}
+	}
+}
+
+func (m *memoryDialogCmp) deferProposal(id string) tea.Cmd {
+	return func() tea.Msg {
+		if m.proposalProvider == nil {
+			return proposalActionMsg{action: "defer", id: id, err: fmt.Errorf("no proposal provider")}
+		}
+		err := m.proposalProvider.DeferProposal(context.Background(), id)
+		return proposalActionMsg{action: "defer", id: id, err: err}
+	}
+}
+
 type nodesLoadedMsg struct {
 	nodes []*hypergraph.Node
 	err   error
@@ -144,6 +211,17 @@ type nodesLoadedMsg struct {
 type statsLoadedMsg struct {
 	stats MemoryStats
 	err   error
+}
+
+type proposalsLoadedMsg struct {
+	proposals []*evolution.Proposal
+	err       error
+}
+
+type proposalActionMsg struct {
+	action string // "approve", "reject", "defer"
+	id     string
+	err    error
 }
 
 func (m *memoryDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
@@ -168,6 +246,20 @@ func (m *memoryDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	case statsLoadedMsg:
 		if msg.err == nil {
 			m.stats = msg.stats
+		}
+		return m, nil
+
+	case proposalsLoadedMsg:
+		if msg.err == nil {
+			m.proposals = msg.proposals
+			m.selectedProposal = 0
+		}
+		return m, nil
+
+	case proposalActionMsg:
+		// After any action, reload proposals
+		if msg.err == nil {
+			return m, m.loadProposals()
 		}
 		return m, nil
 
@@ -205,6 +297,41 @@ func (m *memoryDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Handle proposals view
+		if m.mode == viewProposals {
+			switch {
+			case key.Matches(msg, m.keyMap.Close):
+				m.mode = viewRecent
+				return m, nil
+			case key.Matches(msg, m.keyMap.Next):
+				if m.selectedProposal < len(m.proposals)-1 {
+					m.selectedProposal++
+				}
+				return m, nil
+			case key.Matches(msg, m.keyMap.Previous):
+				if m.selectedProposal > 0 {
+					m.selectedProposal--
+				}
+				return m, nil
+			case key.Matches(msg, m.keyMap.Approve):
+				if len(m.proposals) > 0 && m.selectedProposal < len(m.proposals) {
+					return m, m.approveProposal(m.proposals[m.selectedProposal].ID)
+				}
+				return m, nil
+			case key.Matches(msg, m.keyMap.Reject):
+				if len(m.proposals) > 0 && m.selectedProposal < len(m.proposals) {
+					return m, m.rejectProposal(m.proposals[m.selectedProposal].ID)
+				}
+				return m, nil
+			case key.Matches(msg, m.keyMap.Defer):
+				if len(m.proposals) > 0 && m.selectedProposal < len(m.proposals) {
+					return m, m.deferProposal(m.proposals[m.selectedProposal].ID)
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+
 		// Normal list navigation
 		switch {
 		case key.Matches(msg, m.keyMap.Select):
@@ -228,6 +355,10 @@ func (m *memoryDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 			m.mode = viewStats
 			return m, m.loadStats()
 
+		case key.Matches(msg, m.keyMap.Proposals):
+			m.mode = viewProposals
+			return m, m.loadProposals()
+
 		case key.Matches(msg, m.keyMap.Close):
 			return m, util.CmdHandler(dialogs.CloseDialogMsg{})
 
@@ -249,6 +380,8 @@ func (m *memoryDialogCmp) View() string {
 		content = m.renderStats()
 	case viewDetails:
 		content = m.renderDetails()
+	case viewProposals:
+		content = m.renderProposals()
 	default:
 		content = m.renderList()
 	}
@@ -273,6 +406,8 @@ func (m *memoryDialogCmp) getTitle() string {
 		return "Node Details"
 	case viewSearch:
 		return "Search Memory"
+	case viewProposals:
+		return "Evolution Proposals"
 	default:
 		return "Memory Inspector"
 	}
@@ -324,6 +459,46 @@ func (m *memoryDialogCmp) renderDetails() string {
 	sb.WriteString(fmt.Sprintf("Access Count: %d\n", node.AccessCount))
 	sb.WriteString(fmt.Sprintf("Created: %s\n", node.CreatedAt.Format("2006-01-02 15:04")))
 	sb.WriteString(fmt.Sprintf("\nContent:\n%s", truncate(node.Content, 500)))
+
+	return t.S().Base.
+		Width(m.listWidth()).
+		Height(m.listHeight()).
+		Padding(1).
+		Render(sb.String())
+}
+
+func (m *memoryDialogCmp) renderProposals() string {
+	t := styles.CurrentTheme()
+	var sb strings.Builder
+
+	if len(m.proposals) == 0 {
+		sb.WriteString("No pending proposals.\n\n")
+		sb.WriteString("Proposals are generated when the meta-evolution\n")
+		sb.WriteString("system detects patterns in memory usage that\n")
+		sb.WriteString("suggest schema improvements.")
+	} else {
+		sb.WriteString(fmt.Sprintf("Pending Proposals: %d\n\n", len(m.proposals)))
+
+		for i, p := range m.proposals {
+			prefix := "  "
+			if i == m.selectedProposal {
+				prefix = "> "
+			}
+
+			sb.WriteString(fmt.Sprintf("%s[%s] %s\n", prefix, p.Type, p.Title))
+			if i == m.selectedProposal {
+				sb.WriteString(fmt.Sprintf("    Confidence: %.0f%%  Priority: %d\n", p.Confidence*100, p.Priority))
+				if p.Description != "" {
+					sb.WriteString(fmt.Sprintf("    %s\n", truncate(p.Description, 60)))
+				}
+				if p.Rationale != "" {
+					sb.WriteString(fmt.Sprintf("    Rationale: %s\n", truncate(p.Rationale, 50)))
+				}
+			}
+		}
+
+		sb.WriteString("\n[a]pprove  [x]reject  [d]efer")
+	}
 
 	return t.S().Base.
 		Width(m.listWidth()).

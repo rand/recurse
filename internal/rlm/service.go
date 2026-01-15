@@ -105,6 +105,7 @@ type Service struct {
 	store           *hypergraph.Store
 	controller      *Controller
 	lifecycle       *evolution.LifecycleManager
+	metaEvolution   *evolution.MetaEvolutionManager // meta-evolution for schema adaptation
 	tracer          traceRecorder
 	persistentTrace *PersistentTraceProvider // non-nil if using persistent storage
 	orchestrator    *Orchestrator            // prompt pre-processing
@@ -187,6 +188,19 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		return nil, fmt.Errorf("create lifecycle manager: %w", err)
 	}
 
+	// Create meta-evolution manager for schema adaptation [SPEC-06]
+	outcomeStore := evolution.NewSQLiteOutcomeStore(store)
+	proposalStore := evolution.NewSQLiteProposalStore(store)
+	metaEvolution := evolution.NewMetaEvolutionManager(
+		store, proposalStore, outcomeStore,
+		lifecycle.AuditLogger(),
+		evolution.DefaultMetaEvolutionConfig(),
+	)
+	lifecycle.SetMetaEvolution(metaEvolution)
+
+	// Wire outcome recorder to hybrid search for meta-evolution tracking
+	store.SetOutcomeRecorder(outcomeStore)
+
 	// Create orchestrator for prompt pre-processing
 	orchestrator := NewOrchestrator(metaCtrl, OrchestratorConfig{
 		Enabled:        config.OrchestratorEnabled,
@@ -222,6 +236,7 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		store:           store,
 		controller:      controller,
 		lifecycle:       lifecycle,
+		metaEvolution:   metaEvolution,
 		tracer:          tracer,
 		persistentTrace: persistentTrace,
 		orchestrator:    orchestrator,

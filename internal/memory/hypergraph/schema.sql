@@ -68,6 +68,42 @@ CREATE TABLE IF NOT EXISTS evolution_log (
     metadata TEXT     -- JSON: additional context
 );
 
+-- Retrieval outcome tracking for meta-evolution [SPEC-06.01]
+CREATE TABLE IF NOT EXISTS retrieval_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    query_hash TEXT,              -- hash of query for grouping
+    query_type TEXT,              -- computational, retrieval, analytical, transformational
+    node_id TEXT,                 -- retrieved node
+    node_type TEXT,               -- type of retrieved node
+    node_subtype TEXT,            -- subtype if any
+    relevance_score REAL CHECK(relevance_score >= 0 AND relevance_score <= 1),
+    was_used BOOLEAN DEFAULT 0,   -- whether result was actually used
+    context_tokens INTEGER,       -- tokens in context
+    latency_ms INTEGER            -- retrieval latency
+);
+
+-- Meta-evolution proposals [SPEC-06.03]
+CREATE TABLE IF NOT EXISTS proposals (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK(type IN ('new_subtype', 'rename_type', 'merge_types', 'split_type', 'retrieval_config', 'decay_adjust')),
+    title TEXT NOT NULL,
+    description TEXT,
+    rationale TEXT,               -- why this change is suggested
+    evidence TEXT,                -- JSON array of Evidence
+    impact TEXT,                  -- JSON: ImpactAssessment
+    changes TEXT,                 -- JSON array of SchemaChange
+    confidence REAL CHECK(confidence >= 0 AND confidence <= 1),
+    priority INTEGER CHECK(priority BETWEEN 1 AND 5),
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'applied', 'deferred', 'failed')),
+    status_note TEXT,             -- reason for rejection, etc.
+    source_pattern TEXT,          -- pattern type that triggered this
+    defer_until TIMESTAMP,
+    applied_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Project association for multi-project support
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
@@ -111,6 +147,18 @@ CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
 -- Evolution log queries
 CREATE INDEX IF NOT EXISTS idx_evolution_operation ON evolution_log(operation);
 CREATE INDEX IF NOT EXISTS idx_evolution_timestamp ON evolution_log(timestamp);
+
+-- Retrieval outcomes queries
+CREATE INDEX IF NOT EXISTS idx_outcomes_timestamp ON retrieval_outcomes(timestamp);
+CREATE INDEX IF NOT EXISTS idx_outcomes_query_hash ON retrieval_outcomes(query_hash);
+CREATE INDEX IF NOT EXISTS idx_outcomes_node_type ON retrieval_outcomes(node_type);
+CREATE INDEX IF NOT EXISTS idx_outcomes_query_type ON retrieval_outcomes(query_type);
+CREATE INDEX IF NOT EXISTS idx_outcomes_was_used ON retrieval_outcomes(was_used);
+
+-- Proposals queries
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+CREATE INDEX IF NOT EXISTS idx_proposals_type ON proposals(type);
+CREATE INDEX IF NOT EXISTS idx_proposals_created ON proposals(created_at);
 
 -- Project queries
 CREATE INDEX IF NOT EXISTS idx_node_projects_project ON node_projects(project_id);
