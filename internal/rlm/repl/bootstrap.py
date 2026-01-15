@@ -72,6 +72,35 @@ try:
 except ImportError:
     PYDANTIC_AVAILABLE = False
 
+# Try to import data science libraries if available
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    np = None
+    NUMPY_AVAILABLE = False
+
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    pd = None
+    PANDAS_AVAILABLE = False
+
+try:
+    import polars as pl
+    POLARS_AVAILABLE = True
+except ImportError:
+    pl = None
+    POLARS_AVAILABLE = False
+
+try:
+    import seaborn as sns
+    SEABORN_AVAILABLE = True
+except ImportError:
+    sns = None
+    SEABORN_AVAILABLE = False
+
 
 # =============================================================================
 # RLM Helper Functions
@@ -986,6 +1015,19 @@ class REPLNamespace:
         }
         if PYDANTIC_AVAILABLE:
             self._globals["pydantic"] = pydantic
+        # Data science libraries
+        if NUMPY_AVAILABLE:
+            self._globals["np"] = np
+            self._globals["numpy"] = np
+        if PANDAS_AVAILABLE:
+            self._globals["pd"] = pd
+            self._globals["pandas"] = pd
+        if POLARS_AVAILABLE:
+            self._globals["pl"] = pl
+            self._globals["polars"] = pl
+        if SEABORN_AVAILABLE:
+            self._globals["sns"] = sns
+            self._globals["seaborn"] = sns
 
     def set_var(self, name: str, value: str) -> None:
         """Store a string value as a variable."""
@@ -1031,6 +1073,8 @@ class REPLNamespace:
         builtins = set(dir(__builtins__)) if hasattr(__builtins__, '__iter__') else set()
         stdlib = {
             "re", "json", "ast", "pathlib", "itertools", "collections", "Path", "pydantic",
+            # Data science libraries
+            "np", "numpy", "pd", "pandas", "pl", "polars", "sns", "seaborn",
             # RLM helper functions
             "RLMContext", "peek", "grep", "partition", "partition_by_lines",
             "extract_functions", "count_tokens_approx", "summarize", "map_reduce",
