@@ -703,6 +703,9 @@ func allToolNames() []string {
 		"rlm_peek",
 		"rlm_externalize",
 		"rlm_status",
+		// RLM service tools
+		"rlm_service_status",
+		"rlm_memory_query",
 	}
 }
 

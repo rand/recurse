@@ -14,6 +14,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/catwalk/pkg/catwalk"
@@ -420,6 +421,14 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent) ([]fan
 			tools.NewRLMPeekTool(c.replManager),
 			tools.NewRLMExternalizeTool(c.replManager),
 			tools.NewRLMStatusTool(c.replManager),
+		)
+	}
+
+	// Add RLM service tools if RLM service is available
+	if c.rlmService != nil {
+		allTools = append(allTools,
+			tools.NewRLMServiceStatusTool(c.rlmService),
+			tools.NewRLMMemoryQueryTool(c.rlmService),
 		)
 	}
 
@@ -885,50 +894,44 @@ func (c *coordinator) refreshApiKeyTemplate(ctx context.Context, providerCfg con
 	return nil
 }
 
-// analyzeWithRLM performs RLM orchestration analysis on the prompt.
-// Returns the enhanced prompt with RLM insights, or the original prompt if RLM is unavailable.
+// analyzeWithRLM starts RLM orchestration analysis in the background.
+// Returns the original prompt immediately to keep UI responsive.
+// Analysis results are recorded for future use but don't block the current request.
 func (c *coordinator) analyzeWithRLM(ctx context.Context, prompt string) string {
 	if c.rlmService == nil || !c.rlmService.IsOrchestrationEnabled() {
 		return prompt
 	}
 
-	// Estimate context tokens (rough approximation)
-	contextTokens := len(prompt) / 4
+	// Run analysis in background - don't block the UI at all
+	go func() {
+		// Use a background context since the main request shouldn't wait
+		bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
-	analysis, err := c.rlmService.AnalyzePrompt(ctx, prompt, contextTokens)
-	if err != nil {
-		slog.Warn("RLM analysis failed, using original prompt", "error", err)
-		return prompt
-	}
-
-	// Record analysis as a trace event
-	if c.rlmService.IsRunning() && analysis.Decision != nil {
-		c.recordRLMAnalysisTrace(analysis)
-	}
-
-	// Log analysis results
-	if analysis.Decision != nil {
-		slog.Info("RLM orchestration analysis complete",
-			"action", analysis.Decision.Action,
-			"reasoning", analysis.Decision.Reasoning,
-			"should_decompose", analysis.ShouldDecompose,
-			"duration", analysis.AnalysisTime)
-
-		if analysis.ContextNeeds != nil && analysis.ContextNeeds.Priority > 5 {
-			slog.Debug("RLM identified high-priority context needs",
-				"file_patterns", analysis.ContextNeeds.FilePatterns,
-				"search_queries", analysis.ContextNeeds.SearchQueries)
+		contextTokens := len(prompt) / 4
+		analysis, err := c.rlmService.AnalyzePrompt(bgCtx, prompt, contextTokens)
+		if err != nil {
+			slog.Debug("RLM background analysis failed", "error", err)
+			return
 		}
 
-		if analysis.Routing != nil {
-			slog.Debug("RLM routing recommendation",
-				"tier", analysis.Routing.PrimaryTier,
-				"model", analysis.Routing.PrimaryModel,
-				"reasoning", analysis.Routing.Reasoning)
+		// Record analysis as a trace event
+		if c.rlmService.IsRunning() && analysis.Decision != nil {
+			c.recordRLMAnalysisTrace(analysis)
 		}
-	}
 
-	return analysis.EnhancedPrompt
+		// Log analysis results
+		if analysis.Decision != nil {
+			slog.Info("RLM orchestration analysis complete",
+				"action", analysis.Decision.Action,
+				"reasoning", analysis.Decision.Reasoning,
+				"should_decompose", analysis.ShouldDecompose,
+				"duration", analysis.AnalysisTime)
+		}
+	}()
+
+	// Return original prompt immediately - don't wait for analysis
+	return prompt
 }
 
 // recordRLMAnalysisTrace records the RLM analysis as a trace event.

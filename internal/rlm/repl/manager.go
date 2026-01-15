@@ -104,6 +104,7 @@ func NewManager(opts Options) (*Manager, error) {
 }
 
 // findBootstrap locates the bootstrap.py script.
+// First tries filesystem locations (for development), then falls back to embedded version.
 func findBootstrap() (string, error) {
 	// Try relative to executable first
 	exe, err := os.Executable()
@@ -137,7 +138,9 @@ func findBootstrap() (string, error) {
 		dir = parent
 	}
 
-	return "", fmt.Errorf("bootstrap.py not found (searched from %s)", cwd)
+	// Fall back to embedded bootstrap (for installed binaries)
+	slog.Debug("bootstrap.py not found on filesystem, using embedded version")
+	return extractEmbeddedBootstrap()
 }
 
 // Start launches the Python REPL subprocess.
