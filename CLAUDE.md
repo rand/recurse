@@ -127,7 +127,7 @@ Blocking issues must be fixed before commit. Non-blocking issues: file as `bd` i
 | REPL Environment | External Python (uv/ruff/ty) | Full ecosystem, sandboxed |
 | Hypergraph Storage | SQLite extension | Simple, embedded, expressive enough |
 | Meta-Controller | Claude Haiku 4.5 | Fast, cheap for orchestration decisions |
-| Embedding Model | Voyage-3 or VoyageCode3 | Best quality for code + text |
+| Embedding Model | CodeRankEmbed (local) | Fast, no API needed, good quality |
 | Memory Tiers | Task → Session → Long-term | Balance recency with persistence |
 | Git Integration | Full (traces → commits, diffs) | Reasoning provenance |
 
