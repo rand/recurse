@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -110,17 +111,17 @@ func NewRLMMemoryQueryTool(rlmService *rlm.Service) fantasy.AgentTool {
 				lines = append(lines, "")
 				lines = append(lines, "No nodes found matching the query.")
 			} else {
-				for i, node := range result.Nodes {
+				for i, n := range result.Nodes {
 					lines = append(lines, "")
-					lines = append(lines, fmt.Sprintf("[%d] %s (%s, %s)", i+1, node.Type, node.Tier, node.ID[:8]))
-					lines = append(lines, fmt.Sprintf("    Confidence: %.2f", node.Confidence))
-					lines = append(lines, fmt.Sprintf("    Created: %s", node.CreatedAt.Format(time.RFC3339)))
-					// Truncate content if too long
-					content := node.Content
-					if len(content) > 200 {
-						content = content[:200] + "..."
+					idPrefix := n.ID
+					if len(idPrefix) > 8 {
+						idPrefix = idPrefix[:8]
 					}
-					lines = append(lines, fmt.Sprintf("    Content: %s", content))
+					lines = append(lines, fmt.Sprintf("[%d] %s (%s) - %s", i+1, n.Type, n.Tier, n.CreatedAt.Format("2006-01-02 15:04")))
+
+					// Format content based on type
+					summary := formatNodeContent(n.Type, n.Content)
+					lines = append(lines, fmt.Sprintf("    %s", summary))
 				}
 			}
 
@@ -129,4 +130,80 @@ func NewRLMMemoryQueryTool(rlmService *rlm.Service) fantasy.AgentTool {
 				result,
 			), nil
 		})
+}
+
+// formatNodeContent extracts a human-readable summary from node content.
+func formatNodeContent(nodeType, content string) string {
+	// Try to parse as JSON and extract meaningful fields
+	var data map[string]any
+	if err := json.Unmarshal([]byte(content), &data); err == nil {
+		return formatJSONContent(nodeType, data)
+	}
+
+	// Not JSON - just truncate plain text
+	if len(content) > 150 {
+		return content[:150] + "..."
+	}
+	return content
+}
+
+// formatJSONContent formats JSON data based on node type.
+func formatJSONContent(nodeType string, data map[string]any) string {
+	switch nodeType {
+	case "experience":
+		// Session metadata
+		var parts []string
+		if id, ok := data["id"].(string); ok {
+			// Extract just the timestamp part from session ID
+			if strings.HasPrefix(id, "session-") {
+				parts = append(parts, fmt.Sprintf("Session %s", id[8:]))
+			}
+		}
+		if duration, ok := data["duration"].(string); ok {
+			parts = append(parts, fmt.Sprintf("Duration: %s", duration))
+		}
+		if startTime, ok := data["start_time"].(string); ok {
+			if t, err := time.Parse(time.RFC3339, startTime); err == nil {
+				parts = append(parts, fmt.Sprintf("Started: %s", t.Format("Jan 2 15:04")))
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, " | ")
+		}
+
+	case "fact":
+		// Try to extract key facts
+		if content, ok := data["content"].(string); ok {
+			if len(content) > 150 {
+				return content[:150] + "..."
+			}
+			return content
+		}
+
+	case "decision":
+		// Extract decision info
+		var parts []string
+		if choice, ok := data["choice"].(string); ok {
+			parts = append(parts, fmt.Sprintf("Choice: %s", choice))
+		}
+		if reason, ok := data["reason"].(string); ok {
+			if len(reason) > 100 {
+				reason = reason[:100] + "..."
+			}
+			parts = append(parts, fmt.Sprintf("Reason: %s", reason))
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, " | ")
+		}
+	}
+
+	// Fallback: show top-level keys
+	var keys []string
+	for k := range data {
+		keys = append(keys, k)
+	}
+	if len(keys) > 5 {
+		keys = keys[:5]
+	}
+	return fmt.Sprintf("Fields: %s", strings.Join(keys, ", "))
 }
