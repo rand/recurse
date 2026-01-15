@@ -295,3 +295,110 @@ func TestTaskMemory_Capacity(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "capacity")
 }
+
+// mockFactVerifier implements FactVerifier for testing
+type mockFactVerifier struct {
+	enabled            bool
+	allowAll           bool
+	rejectAll          bool
+	adjustedConfidence float64
+	returnError        error
+}
+
+func (m *mockFactVerifier) VerifyFact(ctx context.Context, content string, evidence string, confidence float64) (bool, float64, error) {
+	if m.returnError != nil {
+		return false, 0, m.returnError
+	}
+	if m.rejectAll {
+		return false, 0, nil
+	}
+	if m.allowAll || m.adjustedConfidence > 0 {
+		return true, m.adjustedConfidence, nil
+	}
+	return true, confidence, nil
+}
+
+func (m *mockFactVerifier) Enabled() bool {
+	return m.enabled
+}
+
+func TestTaskMemory_FactVerifier_AllowsValidFacts(t *testing.T) {
+	store := newTestStore(t)
+	tm := NewTaskMemory(store, DefaultTaskConfig())
+	ctx := context.Background()
+
+	// Set up a verifier that allows facts with adjusted confidence
+	verifier := &mockFactVerifier{
+		enabled:            true,
+		adjustedConfidence: 0.85,
+	}
+	tm.SetFactVerifier(verifier)
+
+	fact, err := tm.AddFactWithEvidence(ctx, "Verified fact", 0.9, "supporting evidence")
+	require.NoError(t, err)
+
+	assert.NotNil(t, fact)
+	assert.Equal(t, 0.85, fact.Confidence, "should use adjusted confidence")
+}
+
+func TestTaskMemory_FactVerifier_RejectsFacts(t *testing.T) {
+	store := newTestStore(t)
+	tm := NewTaskMemory(store, DefaultTaskConfig())
+	ctx := context.Background()
+
+	// Set up a verifier that rejects all facts
+	verifier := &mockFactVerifier{
+		enabled:   true,
+		rejectAll: true,
+	}
+	tm.SetFactVerifier(verifier)
+
+	fact, err := tm.AddFactWithEvidence(ctx, "Invalid fact", 0.9, "contradicting evidence")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "rejected")
+	assert.Nil(t, fact)
+}
+
+func TestTaskMemory_FactVerifier_DisabledPassesThrough(t *testing.T) {
+	store := newTestStore(t)
+	tm := NewTaskMemory(store, DefaultTaskConfig())
+	ctx := context.Background()
+
+	// Set up a disabled verifier
+	verifier := &mockFactVerifier{
+		enabled:   false,
+		rejectAll: true, // Would reject if enabled
+	}
+	tm.SetFactVerifier(verifier)
+
+	fact, err := tm.AddFact(ctx, "Fact without verification", 0.9)
+	require.NoError(t, err)
+
+	assert.NotNil(t, fact)
+	assert.Equal(t, 0.9, fact.Confidence, "should use original confidence when disabled")
+}
+
+func TestTaskMemory_FactVerifier_RequireEvidence(t *testing.T) {
+	store := newTestStore(t)
+	config := DefaultTaskConfig()
+	config.RequireEvidence = true
+	tm := NewTaskMemory(store, config)
+	ctx := context.Background()
+
+	verifier := &mockFactVerifier{
+		enabled:            true,
+		adjustedConfidence: 0.8,
+	}
+	tm.SetFactVerifier(verifier)
+
+	// AddFact without evidence should fail when RequireEvidence is true
+	fact, err := tm.AddFact(ctx, "Fact without evidence", 0.9)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "evidence required")
+	assert.Nil(t, fact)
+
+	// AddFactWithEvidence should work
+	fact, err = tm.AddFactWithEvidence(ctx, "Fact with evidence", 0.9, "some evidence")
+	require.NoError(t, err)
+	assert.NotNil(t, fact)
+}

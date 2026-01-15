@@ -37,6 +37,19 @@ func (h *MemoryCallbackHandler) WithContext(ctx context.Context) *MemoryCallback
 	}
 }
 
+// SetFactVerifier sets the fact verifier for hallucination detection.
+// [SPEC-08.15] Integrates memory gate with handler.
+func (h *MemoryCallbackHandler) SetFactVerifier(verifier tiers.FactVerifier) {
+	if h.taskMem != nil {
+		h.taskMem.SetFactVerifier(verifier)
+	}
+}
+
+// TaskMemory returns the underlying task memory for direct access.
+func (h *MemoryCallbackHandler) TaskMemory() *tiers.TaskMemory {
+	return h.taskMem
+}
+
 // MemoryQuery searches memory for relevant nodes.
 func (h *MemoryCallbackHandler) MemoryQuery(query string, limit int) ([]repl.MemoryNode, error) {
 	if h.taskMem == nil {
@@ -72,6 +85,20 @@ func (h *MemoryCallbackHandler) MemoryAddFact(content string, confidence float64
 	}
 
 	node, err := h.taskMem.AddFact(h.ctx, content, confidence)
+	if err != nil {
+		return "", err
+	}
+	return node.ID, nil
+}
+
+// MemoryAddFactWithEvidence adds a fact to memory with evidence for verification.
+// [SPEC-08.15] Verifies fact before storage if hallucination detection is enabled.
+func (h *MemoryCallbackHandler) MemoryAddFactWithEvidence(content string, confidence float64, evidence string) (string, error) {
+	if h.taskMem == nil {
+		return "", nil
+	}
+
+	node, err := h.taskMem.AddFactWithEvidence(h.ctx, content, confidence, evidence)
 	if err != nil {
 		return "", err
 	}

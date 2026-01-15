@@ -5,10 +5,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/rand/recurse/internal/memory/hypergraph"
 )
+
+// FactVerifier verifies facts before storage.
+// [SPEC-08.15] Interface for hallucination detection integration.
+type FactVerifier interface {
+	// VerifyFact checks if a fact should be stored based on evidence.
+	// Returns allowed (bool), adjusted confidence, and any error.
+	VerifyFact(ctx context.Context, content string, evidence string, confidence float64) (allowed bool, adjustedConfidence float64, err error)
+
+	// Enabled returns whether verification is active.
+	Enabled() bool
+}
 
 // TaskMemoryConfig configures task tier behavior.
 type TaskMemoryConfig struct {
@@ -20,6 +32,9 @@ type TaskMemoryConfig struct {
 
 	// Threshold for considering nodes similar (for deduplication)
 	SimilarityThreshold float64
+
+	// RequireEvidence rejects facts without evidence when verification is enabled
+	RequireEvidence bool
 }
 
 // DefaultTaskConfig returns the default task tier configuration.
@@ -37,10 +52,14 @@ func DefaultTaskConfig() TaskMemoryConfig {
 type TaskMemory struct {
 	store  *hypergraph.Store
 	config TaskMemoryConfig
+	logger *slog.Logger
 
 	// Current task context
 	taskID      string
 	taskStarted time.Time
+
+	// Hallucination detection [SPEC-08.15-18]
+	verifier FactVerifier
 }
 
 // NewTaskMemory creates a new task memory manager.
@@ -51,9 +70,21 @@ func NewTaskMemory(store *hypergraph.Store, config TaskMemoryConfig) *TaskMemory
 	return &TaskMemory{
 		store:       store,
 		config:      config,
+		logger:      slog.Default(),
 		taskID:      fmt.Sprintf("task-%d", time.Now().UnixNano()),
 		taskStarted: time.Now(),
 	}
+}
+
+// SetFactVerifier sets the fact verifier for hallucination detection.
+// [SPEC-08.15]
+func (tm *TaskMemory) SetFactVerifier(verifier FactVerifier) {
+	tm.verifier = verifier
+}
+
+// SetLogger sets the logger for task memory.
+func (tm *TaskMemory) SetLogger(logger *slog.Logger) {
+	tm.logger = logger
 }
 
 // StartTask begins a new task context.
@@ -74,7 +105,51 @@ func (tm *TaskMemory) StartTask(ctx context.Context, description string) error {
 }
 
 // AddFact stores a fact in working memory.
+// This delegates to AddFactWithEvidence with empty evidence.
 func (tm *TaskMemory) AddFact(ctx context.Context, content string, confidence float64) (*hypergraph.Node, error) {
+	return tm.AddFactWithEvidence(ctx, content, confidence, "")
+}
+
+// AddFactWithEvidence stores a fact in working memory after optional verification.
+// [SPEC-08.15-18] Verifies facts before storage when a verifier is configured.
+func (tm *TaskMemory) AddFactWithEvidence(ctx context.Context, content string, confidence float64, evidence string) (*hypergraph.Node, error) {
+	// [SPEC-08.15] Verify facts before storage
+	if tm.verifier != nil && tm.verifier.Enabled() {
+		// Require evidence if configured
+		if evidence == "" && tm.config.RequireEvidence {
+			tm.logger.Warn("fact rejected - no evidence provided",
+				"content", truncateContent(content, 50),
+			)
+			return nil, fmt.Errorf("add fact: evidence required for verification")
+		}
+
+		// Verify the fact
+		allowed, adjustedConfidence, err := tm.verifier.VerifyFact(ctx, content, evidence, confidence)
+		if err != nil {
+			// Log but continue - graceful degradation handled by verifier
+			tm.logger.Warn("fact verification error",
+				"content", truncateContent(content, 50),
+				"error", err,
+			)
+		}
+
+		if !allowed {
+			tm.logger.Info("fact rejected by verifier",
+				"content", truncateContent(content, 50),
+				"original_confidence", confidence,
+			)
+			return nil, fmt.Errorf("add fact: rejected by hallucination verifier")
+		}
+
+		// Use adjusted confidence
+		confidence = adjustedConfidence
+		tm.logger.Debug("fact verified",
+			"content", truncateContent(content, 50),
+			"original_confidence", confidence,
+			"adjusted_confidence", adjustedConfidence,
+		)
+	}
+
 	if tm.config.AutoConsolidate {
 		// Check for similar existing facts
 		if existing, _ := tm.findSimilar(ctx, content, hypergraph.NodeTypeFact); existing != nil {
@@ -98,6 +173,14 @@ func (tm *TaskMemory) AddFact(ctx context.Context, content string, confidence fl
 	}
 
 	return node, nil
+}
+
+// truncateContent truncates a string for logging.
+func truncateContent(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // AddSnippet stores a code snippet in working memory.
