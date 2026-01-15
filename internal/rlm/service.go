@@ -3,6 +3,7 @@ package rlm
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -300,6 +301,23 @@ func (s *Service) Start(ctx context.Context) error {
 	s.running = true
 	s.startTime = time.Now()
 
+	// Restore stats from checkpoint if available
+	if s.checkpoint != nil {
+		if cp, err := s.checkpoint.Load(); err == nil && cp != nil && cp.ServiceStats != nil {
+			s.stats = ServiceStats{
+				TotalExecutions: cp.ServiceStats.TotalExecutions,
+				TotalTokens:     cp.ServiceStats.TotalTokens,
+				TotalDuration:   cp.ServiceStats.TotalDuration,
+				TasksCompleted:  cp.ServiceStats.TasksCompleted,
+				SessionsEnded:   cp.ServiceStats.SessionsEnded,
+				Errors:          cp.ServiceStats.Errors,
+			}
+			slog.Info("Restored RLM stats from checkpoint",
+				"executions", s.stats.TotalExecutions,
+				"tokens", s.stats.TotalTokens)
+		}
+	}
+
 	// Start idle maintenance loop
 	s.lifecycle.StartIdleLoop(ctx)
 
@@ -349,11 +367,26 @@ func (s *Service) Stop() error {
 		s.learner.Stop()
 	}
 
-	// Stop checkpoint manager and clear checkpoint on clean exit
+	// Stop checkpoint manager and persist stats for next session
 	if s.checkpoint != nil {
+		// Save final stats before stopping (clear task/RLM state since those are session-specific)
+		s.checkpoint.UpdateServiceStats(&checkpoint.ServiceStats{
+			TotalExecutions: s.stats.TotalExecutions,
+			TotalTokens:     s.stats.TotalTokens,
+			TotalDuration:   s.stats.TotalDuration,
+			TasksCompleted:  s.stats.TasksCompleted,
+			SessionsEnded:   s.stats.SessionsEnded,
+			Errors:          s.stats.Errors,
+		})
+		// Clear session-specific state but keep stats
+		s.checkpoint.UpdateTaskState(nil)
+		s.checkpoint.UpdateRLMState(nil)
+		// Save to disk before stopping
+		if err := s.checkpoint.Save(); err != nil {
+			slog.Warn("Failed to save final checkpoint", "error", err)
+		}
 		s.checkpoint.Stop()
-		// Clear checkpoint on normal exit (no crash recovery needed)
-		s.checkpoint.Clear()
+		// Don't clear checkpoint - stats should persist across sessions
 	}
 
 	// Stop lifecycle manager (stops idle loop)

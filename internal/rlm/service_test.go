@@ -583,7 +583,7 @@ func TestService_ClearCheckpoint(t *testing.T) {
 	assert.Nil(t, cp)
 }
 
-func TestService_CheckpointClearedOnStop(t *testing.T) {
+func TestService_CheckpointStatsPersistOnStop(t *testing.T) {
 	client := &mockLLMClient{}
 	cfg := DefaultServiceConfig()
 	cfg.Checkpoint.Path = t.TempDir()
@@ -595,17 +595,20 @@ func TestService_CheckpointClearedOnStop(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, svc.Start(ctx))
 
-	// Create checkpoint
+	// Create checkpoint with task state
 	svc.SetSessionID("test-session")
 	svc.UpdateCheckpointTask("task-1", time.Now(), 50, 10, 5)
 	require.NoError(t, svc.checkpoint.Save())
 
-	// Stop clears checkpoint (normal exit)
+	// Stop persists stats but clears session-specific state
 	require.NoError(t, svc.Stop())
 
-	// Create new manager to check file is gone
+	// Create new manager to check stats persist but task state is cleared
 	mgr := checkpoint.NewManager(cfg.Checkpoint)
 	cp, err := mgr.Load()
 	require.NoError(t, err)
-	assert.Nil(t, cp, "checkpoint should be cleared on normal exit")
+	require.NotNil(t, cp, "checkpoint should exist with persisted stats")
+	assert.Nil(t, cp.TaskState, "task state should be cleared on normal exit")
+	assert.Nil(t, cp.RLMState, "RLM state should be cleared on normal exit")
+	assert.NotNil(t, cp.ServiceStats, "service stats should persist across sessions")
 }
