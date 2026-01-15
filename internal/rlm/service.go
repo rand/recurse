@@ -11,6 +11,7 @@ import (
 	"github.com/rand/recurse/internal/memory/evolution"
 	"github.com/rand/recurse/internal/memory/hypergraph"
 	"github.com/rand/recurse/internal/rlm/checkpoint"
+	"github.com/rand/recurse/internal/rlm/compress"
 	"github.com/rand/recurse/internal/rlm/meta"
 	"github.com/rand/recurse/internal/rlm/repl"
 	"github.com/rand/recurse/internal/tui/components/dialogs/rlmtrace"
@@ -55,6 +56,16 @@ type ServiceConfig struct {
 
 	// BudgetEnabled enables budget tracking and enforcement.
 	BudgetEnabled bool
+
+	// Compression configures the context compression manager.
+	Compression compress.ManagerConfig
+
+	// CompressionEnabled enables context compression for large contexts.
+	CompressionEnabled bool
+
+	// CompressionThreshold is the token count above which compression is applied.
+	// Default: 8000 tokens.
+	CompressionThreshold int
 }
 
 // DefaultServiceConfig returns sensible defaults for the RLM service.
@@ -74,6 +85,9 @@ func DefaultServiceConfig() ServiceConfig {
 			Limits:      budget.DefaultLimits(),
 			Enforcement: budget.DefaultEnforcementConfig(),
 		},
+		CompressionEnabled:   true, // Enable compression by default
+		CompressionThreshold: 8000, // Compress when context exceeds 8K tokens
+		Compression:          compress.DefaultManagerConfig(),
 	}
 }
 
@@ -218,8 +232,14 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		config:          config,
 	}
 
-	// Create RLM wrapper for context externalization
-	svc.wrapper = NewWrapper(svc, DefaultWrapperConfig())
+	// Create RLM wrapper for context externalization with compression
+	wrapperConfig := DefaultWrapperConfig()
+	wrapperConfig.CompressionEnabled = config.CompressionEnabled
+	wrapperConfig.CompressionThreshold = config.CompressionThreshold
+	if config.CompressionEnabled {
+		wrapperConfig.CompressionConfig = &config.Compression
+	}
+	svc.wrapper = NewWrapper(svc, wrapperConfig)
 
 	// Wire up lifecycle callbacks for statistics
 	lifecycle.OnTaskComplete(func(result *evolution.LifecycleResult) {

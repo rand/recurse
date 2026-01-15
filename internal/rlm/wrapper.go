@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rand/recurse/internal/rlm/compress"
 	"github.com/rand/recurse/internal/rlm/meta"
 	"github.com/rand/recurse/internal/rlm/repl"
 )
@@ -25,6 +26,11 @@ type Wrapper struct {
 
 	// Proactive computation advisor
 	computationAdvisor *ComputationAdvisor
+
+	// Context compression
+	compressionMgr       *compress.Manager
+	compressionEnabled   bool
+	compressionThreshold int // Compress when total tokens exceed this
 
 	// Thresholds for when to use RLM mode
 	minContextTokensForRLM            int
@@ -64,6 +70,17 @@ type WrapperConfig struct {
 
 	// DisableLLMFallback disables LLM-based classification fallback.
 	DisableLLMFallback bool
+
+	// CompressionEnabled enables context compression before mode selection.
+	CompressionEnabled bool
+
+	// CompressionThreshold is the token count above which compression is applied.
+	// Default: 8000 tokens.
+	CompressionThreshold int
+
+	// CompressionConfig configures the compression manager (optional).
+	// If nil, default compression config is used when CompressionEnabled is true.
+	CompressionConfig *compress.ManagerConfig
 }
 
 // DefaultWrapperConfig returns sensible defaults.
@@ -76,6 +93,8 @@ func DefaultWrapperConfig() WrapperConfig {
 		LLMFallbackMinConfidence:          0.4,   // Try LLM fallback when confidence is 40-70%
 		DisableClassifier:                 false,
 		DisableLLMFallback:                false,
+		CompressionEnabled:                false, // Disabled by default
+		CompressionThreshold:              8000,  // Compress when context exceeds 8K tokens
 	}
 }
 
@@ -96,6 +115,9 @@ func NewWrapper(svc *Service, cfg WrapperConfig) *Wrapper {
 	if cfg.LLMFallbackMinConfidence == 0 {
 		cfg.LLMFallbackMinConfidence = 0.4
 	}
+	if cfg.CompressionThreshold == 0 {
+		cfg.CompressionThreshold = 8000
+	}
 
 	w := &Wrapper{
 		service:                           svc,
@@ -104,6 +126,19 @@ func NewWrapper(svc *Service, cfg WrapperConfig) *Wrapper {
 		maxDirectContextTokens:            cfg.MaxDirectContextTokens,
 		classificationConfidenceThreshold: cfg.ClassificationConfidenceThreshold,
 		llmFallbackMinConfidence:          cfg.LLMFallbackMinConfidence,
+		compressionEnabled:                cfg.CompressionEnabled,
+		compressionThreshold:              cfg.CompressionThreshold,
+	}
+
+	// Initialize compression manager if enabled
+	if cfg.CompressionEnabled {
+		var compressCfg compress.ManagerConfig
+		if cfg.CompressionConfig != nil {
+			compressCfg = *cfg.CompressionConfig
+		} else {
+			compressCfg = compress.DefaultManagerConfig()
+		}
+		w.compressionMgr = compress.NewManager(compressCfg)
 	}
 
 	// Initialize classifier unless disabled
@@ -149,6 +184,29 @@ func (w *Wrapper) PrepareContextWithOptions(ctx context.Context, prompt string, 
 	for _, c := range contexts {
 		totalTokens += estimateTokens(c.Content)
 	}
+
+	// Apply compression if enabled and context exceeds threshold
+	var compressionResult *compress.PreparedContext
+	if w.compressionEnabled && w.compressionMgr != nil && totalTokens > w.compressionThreshold {
+		compressed, err := w.compressContexts(ctx, contexts, prompt, totalTokens)
+		if err != nil {
+			slog.Warn("Context compression failed, using original contexts", "error", err)
+		} else {
+			compressionResult = compressed
+			// Update contexts with compressed versions
+			contexts = w.applyCompressionResults(contexts, compressed)
+			// Recalculate total tokens after compression
+			totalTokens = estimateTokens(prompt)
+			for _, c := range contexts {
+				totalTokens += estimateTokens(c.Content)
+			}
+			slog.Info("Context compressed",
+				"original_tokens", compressed.OriginalTokens,
+				"compressed_tokens", compressed.CompressedTokens,
+				"ratio", fmt.Sprintf("%.2f", compressed.Ratio))
+		}
+	}
+	_ = compressionResult // Used for future metrics/logging
 
 	// Classify the task if classifier is available and not skipped
 	var classification *Classification
@@ -1390,4 +1448,107 @@ func isBuiltinRLMVar(name string) bool {
 		"get_final_output": true, "clear_final_output": true,
 	}
 	return builtins[name]
+}
+
+// compressContexts compresses multiple context sources using the compression manager.
+func (w *Wrapper) compressContexts(ctx context.Context, contexts []ContextSource, query string, totalTokens int) (*compress.PreparedContext, error) {
+	if w.compressionMgr == nil {
+		return nil, fmt.Errorf("compression manager not initialized")
+	}
+
+	// Convert ContextSource to compress.ContextChunk
+	chunks := make([]compress.ContextChunk, len(contexts))
+	for i, c := range contexts {
+		// Generate ID from source metadata or index
+		id := fmt.Sprintf("ctx_%d", i)
+		if source, ok := c.Metadata["source"].(string); ok {
+			id = source
+		}
+
+		chunks[i] = compress.ContextChunk{
+			ID:        id,
+			Content:   c.Content,
+			Type:      string(c.Type),
+			Relevance: 0.5, // Default relevance, could be enhanced with embedding
+		}
+	}
+
+	// Target: compress to fit within threshold, aiming for 30% of original
+	targetBudget := w.compressionThreshold
+	if targetBudget > totalTokens/3 {
+		targetBudget = totalTokens / 3
+	}
+
+	return w.compressionMgr.PrepareContext(ctx, chunks, query, targetBudget)
+}
+
+// applyCompressionResults updates context sources with compressed content.
+func (w *Wrapper) applyCompressionResults(contexts []ContextSource, compressed *compress.PreparedContext) []ContextSource {
+	if compressed == nil || len(compressed.ChunkResults) == 0 {
+		return contexts
+	}
+
+	// Build map of compressed content by ID
+	compressedMap := make(map[string]*compress.ChunkResult)
+	for _, result := range compressed.ChunkResults {
+		compressedMap[result.ID] = result
+	}
+
+	// Create new contexts with compressed content
+	result := make([]ContextSource, len(contexts))
+	for i, c := range contexts {
+		result[i] = c // Copy original
+
+		// Find matching compression result
+		id := fmt.Sprintf("ctx_%d", i)
+		if source, ok := c.Metadata["source"].(string); ok {
+			id = source
+		}
+
+		if chunkResult, ok := compressedMap[id]; ok {
+			// Extract compressed content from the concatenated result
+			// For now, we recalculate based on the ratio
+			if chunkResult.Method != compress.MethodPassthrough && chunkResult.Ratio < 1.0 {
+				// Re-compress individually to get the actual compressed content
+				compResult, err := w.compressionMgr.CompressChunk(context.Background(), compress.ContextChunk{
+					ID:      id,
+					Content: c.Content,
+					Type:    string(c.Type),
+				}, compress.Options{
+					TargetTokens: chunkResult.Allocated,
+					MinTokens:    50,
+				})
+				if err == nil {
+					result[i].Content = compResult.Compressed
+
+					// Add compression metadata
+					if result[i].Metadata == nil {
+						result[i].Metadata = make(map[string]interface{})
+					}
+					result[i].Metadata["compressed"] = true
+					result[i].Metadata["compression_ratio"] = compResult.Ratio
+					result[i].Metadata["original_tokens"] = compResult.OriginalTokens
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// CompressionStats returns statistics from the compression manager.
+func (w *Wrapper) CompressionStats() *compress.ManagerStats {
+	if w.compressionMgr == nil {
+		return nil
+	}
+	stats := w.compressionMgr.Stats()
+	return &stats
+}
+
+// SetCompressionManager sets an external compression manager.
+func (w *Wrapper) SetCompressionManager(mgr *compress.Manager) {
+	w.compressionMgr = mgr
+	if mgr != nil {
+		w.compressionEnabled = true
+	}
 }

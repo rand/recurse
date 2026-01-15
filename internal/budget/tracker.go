@@ -25,6 +25,11 @@ type State struct {
 	REPLCPUTimeMS   int64   `json:"repl_cpu_time_ms"`   // Cumulative CPU time in milliseconds
 	REPLPeakMemoryMB float64 `json:"repl_peak_memory_mb"` // Peak memory usage in MB
 
+	// Compression
+	CompressionSavedTokens int64   `json:"compression_saved_tokens"` // Tokens saved by compression
+	CompressionCount       int     `json:"compression_count"`        // Number of compressions performed
+	CompressionRatio       float64 `json:"compression_ratio"`        // Average compression ratio
+
 	// Time
 	SessionStart time.Time     `json:"session_start"`
 	TaskStart    time.Time     `json:"task_start,omitempty"`
@@ -157,6 +162,17 @@ func (t *Tracker) UpdateREPLResources(cpuTimeMS int64, peakMemoryMB float64) {
 	}
 }
 
+// AddCompressionSavings records tokens saved by context compression.
+func (t *Tracker) AddCompressionSavings(tokensSaved int64, ratio float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.state.CompressionSavedTokens += tokensSaved
+	t.state.CompressionCount++
+	// Update running average ratio
+	n := float64(t.state.CompressionCount)
+	t.state.CompressionRatio = t.state.CompressionRatio*(n-1)/n + ratio/n
+}
+
 // checkLimitsLocked checks if any limits are exceeded. Must be called with lock held.
 func (t *Tracker) checkLimitsLocked() error {
 	violations := t.limits.Check(t.state)
@@ -223,6 +239,11 @@ func (t *Tracker) Usage() Usage {
 		u.SessionTimePercent = float64(t.state.SessionDuration()) / float64(t.limits.MaxSessionTime) * 100
 	}
 
+	// Include compression stats
+	u.CompressionSavedTokens = t.state.CompressionSavedTokens
+	u.CompressionCount = t.state.CompressionCount
+	u.CompressionRatio = t.state.CompressionRatio
+
 	return u
 }
 
@@ -234,4 +255,9 @@ type Usage struct {
 	RecursionPercent    float64 `json:"recursion_percent"`
 	SubCallsPercent     float64 `json:"sub_calls_percent"`
 	SessionTimePercent  float64 `json:"session_time_percent"`
+
+	// Compression stats (not percentages, but included for convenience)
+	CompressionSavedTokens int64   `json:"compression_saved_tokens"`
+	CompressionCount       int     `json:"compression_count"`
+	CompressionRatio       float64 `json:"compression_ratio"`
 }

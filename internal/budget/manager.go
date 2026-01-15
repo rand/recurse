@@ -296,6 +296,13 @@ func (m *Manager) IncrementREPLExecution() {
 	m.tracker.IncrementREPLExecution()
 }
 
+// AddCompressionSavings records tokens saved by context compression.
+func (m *Manager) AddCompressionSavings(tokensSaved int64, ratio float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tracker.AddCompressionSavings(tokensSaved, ratio)
+}
+
 // CheckBudget checks if an operation can proceed given estimated cost.
 func (m *Manager) CheckBudget(estimatedInputTokens, estimatedOutputTokens int64, inputCost, outputCost float64) *BudgetCheck {
 	m.mu.RLock()

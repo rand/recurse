@@ -124,15 +124,15 @@ Features:
 
 ## Implementation Tasks
 
-- [ ] Implement ExtractiveCompressor
-- [ ] Implement AbstractiveCompressor
-- [ ] Create HybridCompressor
-- [ ] Build HierarchicalCompressor
-- [ ] Add IncrementalCompressor with caching
-- [ ] Create Context Manager
-- [ ] Integrate with RLM Controller
-- [ ] Add observability metrics
-- [ ] Write tests
+- [x] Implement ExtractiveCompressor (`internal/rlm/compress/compressor.go`)
+- [x] Implement AbstractiveCompressor (`internal/rlm/compress/compressor.go`)
+- [x] Create HybridCompressor (`internal/rlm/compress/compressor.go`)
+- [x] Build HierarchicalCompressor (`internal/rlm/compress/hierarchical.go`)
+- [x] Add IncrementalCompressor with caching (`internal/rlm/compress/incremental.go`)
+- [x] Create Context Manager (`internal/rlm/compress/manager.go`)
+- [x] Integrate with RLM Controller (`internal/rlm/wrapper.go`, `internal/rlm/service.go`)
+- [x] Add observability metrics (`internal/rlm/compress/metrics.go`, `internal/budget/tracker.go`)
+- [x] Write tests (`internal/rlm/compress/*_test.go`)
 
 ## Dependencies
 
