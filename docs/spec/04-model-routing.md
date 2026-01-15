@@ -146,16 +146,16 @@ model_profiles(id, provider, name, success_rate, median_latency,
 
 ## Implementation Tasks
 
-- [ ] Define ModelProfile and TaskFeatures types
-- [ ] Implement CategoryClassifier (heuristic + LLM)
-- [ ] Create FeatureExtractor
-- [ ] Build Router with scoring algorithm
-- [ ] Implement RoutingStore
-- [ ] Add RoutingLearner for feedback
-- [ ] Integrate with RLM Controller
-- [ ] Add explainability (reasoning for decisions)
-- [ ] Add observability metrics
-- [ ] Write tests
+- [x] Define ModelProfile and TaskFeatures types (`internal/rlm/routing/types.go`)
+- [x] Implement CategoryClassifier (heuristic + LLM) (`internal/rlm/routing/classifier.go`)
+- [x] Create FeatureExtractor (`internal/rlm/routing/extractor.go`)
+- [x] Build Router with scoring algorithm (`internal/rlm/routing/router.go`)
+- [x] Implement RoutingStore (`internal/rlm/routing/store.go`)
+- [x] Add RoutingLearner for feedback (`internal/rlm/routing/learner.go`)
+- [x] Integrate with RLM Controller (`internal/rlm/routing/learned.go`)
+- [x] Add explainability (reasoning for decisions) (`internal/rlm/routing/router.go`)
+- [x] Add observability metrics (`internal/rlm/routing/router.go`)
+- [x] Write tests (`internal/rlm/routing/*_test.go`)
 
 ## Dependencies
 

@@ -195,17 +195,17 @@ Features:
 
 ## Implementation Tasks
 
-- [ ] Create BudgetStore with hypergraph backend
-- [ ] Add SessionRecord and ProjectBudget types
-- [ ] Wire budget.Tracker into RLM Service
-- [ ] Add pre-flight cost estimation
-- [ ] Implement enforcement callbacks
-- [ ] Add graceful degradation support
-- [ ] Create ProjectBudgetManager
-- [ ] Add budget event emission
-- [ ] Implement BudgetAnalytics
-- [ ] Add tests for all components
-- [ ] Update TUI budget panel integration
+- [x] Create BudgetStore with hypergraph backend (`internal/budget/store.go`)
+- [x] Add SessionRecord and ProjectBudget types (`internal/budget/store.go`)
+- [x] Wire budget.Tracker into RLM Service (`internal/rlm/service.go`)
+- [x] Add pre-flight cost estimation (`internal/budget/manager.go` CheckBudget)
+- [x] Implement enforcement callbacks (`internal/budget/manager.go` SetEventCallback)
+- [x] Add graceful degradation support (`internal/budget/limits.go` EnforcementConfig)
+- [x] Create ProjectBudgetManager (`internal/budget/manager.go`)
+- [x] Add budget event emission (`internal/budget/tracker.go`)
+- [x] Implement BudgetAnalytics (`internal/budget/reporter.go`)
+- [x] Add tests for all components (`internal/budget/*_test.go`)
+- [x] Update TUI budget panel integration (`internal/tui/components/core/status/budget.go`)
 
 ## Dependencies
 
