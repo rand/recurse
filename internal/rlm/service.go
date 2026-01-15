@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rand/recurse/internal/budget"
 	"github.com/rand/recurse/internal/learning"
 	"github.com/rand/recurse/internal/memory/evolution"
 	"github.com/rand/recurse/internal/memory/hypergraph"
@@ -48,6 +49,12 @@ type ServiceConfig struct {
 
 	// LearningEnabled enables continuous learning from interactions.
 	LearningEnabled bool
+
+	// Budget configures the budget manager.
+	Budget budget.ManagerConfig
+
+	// BudgetEnabled enables budget tracking and enforcement.
+	BudgetEnabled bool
 }
 
 // DefaultServiceConfig returns sensible defaults for the RLM service.
@@ -62,6 +69,11 @@ func DefaultServiceConfig() ServiceConfig {
 		Checkpoint:          checkpoint.DefaultConfig(),
 		LearningEnabled:     true,  // Enable learning by default
 		Learning:            learning.EngineConfig{},
+		BudgetEnabled:       true,  // Enable budget tracking by default
+		Budget: budget.ManagerConfig{
+			Limits:      budget.DefaultLimits(),
+			Enforcement: budget.DefaultEnforcementConfig(),
+		},
 	}
 }
 
@@ -86,6 +98,7 @@ type Service struct {
 	wrapper         *Wrapper                 // RLM wrapper for context externalization
 	checkpoint      *checkpoint.Manager      // session state persistence
 	learner         *learning.Engine         // continuous learning engine
+	budgetMgr       *budget.Manager          // budget tracking and enforcement
 
 	// Configuration
 	config ServiceConfig
@@ -184,6 +197,13 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		learner = learning.NewEngine(store, config.Learning)
 	}
 
+	// Create budget manager if enabled
+	var budgetMgr *budget.Manager
+	if config.BudgetEnabled {
+		budgetStore := budget.NewStore(store)
+		budgetMgr = budget.NewManager(budgetStore, config.Budget)
+	}
+
 	svc := &Service{
 		store:           store,
 		controller:      controller,
@@ -194,6 +214,7 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		subCallRouter:   subCallRouter,
 		checkpoint:      checkpointMgr,
 		learner:         learner,
+		budgetMgr:       budgetMgr,
 		config:          config,
 	}
 
@@ -257,6 +278,14 @@ func (s *Service) Start(ctx context.Context) error {
 		s.learner.Start()
 	}
 
+	// Start budget session
+	if s.budgetMgr != nil {
+		if err := s.budgetMgr.StartSession(ctx); err != nil {
+			// Log but don't fail - budget tracking is non-critical
+			// Budget will still track in-memory
+		}
+	}
+
 	return nil
 }
 
@@ -270,6 +299,15 @@ func (s *Service) Stop() error {
 	}
 
 	s.running = false
+
+	// End budget session first (needs store to persist)
+	if s.budgetMgr != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := s.budgetMgr.EndSession(ctx); err != nil {
+			// Log but continue shutdown
+		}
+		cancel()
+	}
 
 	// Stop learning engine first (before closing store)
 	if s.learner != nil {
@@ -338,6 +376,18 @@ func (s *Service) Execute(ctx context.Context, task string) (*ExecutionResult, e
 	}
 	stats := s.stats
 	s.mu.Unlock()
+
+	// Track tokens in budget manager
+	if s.budgetMgr != nil && result != nil {
+		// Estimate input/output split (controller doesn't provide this breakdown)
+		// Use a rough 2:1 input:output ratio as approximation
+		inputTokens := int64(result.TotalTokens * 2 / 3)
+		outputTokens := int64(result.TotalTokens / 3)
+		// TODO: Get actual costs from model pricing
+		inputCost := float64(inputTokens) * 0.000003  // $3/M tokens estimate
+		outputCost := float64(outputTokens) * 0.000015 // $15/M tokens estimate
+		s.budgetMgr.AddTokens(inputTokens, outputTokens, 0, inputCost, outputCost)
+	}
 
 	// Update checkpoint after execution with current stats
 	if s.checkpoint != nil {
@@ -801,4 +851,70 @@ func (s *Service) LearningStats(ctx context.Context) (*learning.EngineStats, err
 		return nil, nil
 	}
 	return s.learner.Stats(ctx)
+}
+
+// Budget-related methods
+
+// BudgetManager returns the budget manager for direct access.
+func (s *Service) BudgetManager() *budget.Manager {
+	return s.budgetMgr
+}
+
+// IsBudgetEnabled returns whether budget tracking is enabled.
+func (s *Service) IsBudgetEnabled() bool {
+	return s.budgetMgr != nil
+}
+
+// BudgetState returns the current budget state.
+func (s *Service) BudgetState() budget.State {
+	if s.budgetMgr == nil {
+		return budget.State{}
+	}
+	return s.budgetMgr.State()
+}
+
+// BudgetLimits returns the current budget limits.
+func (s *Service) BudgetLimits() budget.Limits {
+	if s.budgetMgr == nil {
+		return budget.Limits{}
+	}
+	return s.budgetMgr.Limits()
+}
+
+// BudgetUsage returns current usage percentages.
+func (s *Service) BudgetUsage() budget.Usage {
+	if s.budgetMgr == nil {
+		return budget.Usage{}
+	}
+	return s.budgetMgr.Usage()
+}
+
+// BudgetReport generates a budget report.
+func (s *Service) BudgetReport() budget.Report {
+	if s.budgetMgr == nil {
+		return budget.Report{}
+	}
+	return s.budgetMgr.Report()
+}
+
+// CheckBudget checks if an operation can proceed given estimated cost.
+func (s *Service) CheckBudget(estimatedInputTokens, estimatedOutputTokens int64, inputCost, outputCost float64) *budget.BudgetCheck {
+	if s.budgetMgr == nil {
+		return &budget.BudgetCheck{CanProceed: true}
+	}
+	return s.budgetMgr.CheckBudget(estimatedInputTokens, estimatedOutputTokens, inputCost, outputCost)
+}
+
+// SetBudgetEventCallback sets the callback for budget events.
+func (s *Service) SetBudgetEventCallback(cb func(budget.Event)) {
+	if s.budgetMgr != nil {
+		s.budgetMgr.SetEventCallback(cb)
+	}
+}
+
+// UpdateBudgetLimits updates the budget limits.
+func (s *Service) UpdateBudgetLimits(limits budget.Limits) {
+	if s.budgetMgr != nil {
+		s.budgetMgr.UpdateLimits(limits)
+	}
 }

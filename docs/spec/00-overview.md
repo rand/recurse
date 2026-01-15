@@ -40,6 +40,7 @@
 | [SPEC-04](./04-model-routing.md) | Learned Model Routing | Planned | P2 |
 | [SPEC-05](./05-context-compression.md) | Context Compression | Planned | P2 |
 | [SPEC-06](./06-meta-evolution.md) | Meta-Evolution | Planned | P3 |
+| [SPEC-07](./07-budget-management.md) | Budget Management | In Progress | P1 |
 
 ## Implementation Order
 
