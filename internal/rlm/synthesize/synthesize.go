@@ -178,7 +178,7 @@ func (s *LLMSynthesizer) Synthesize(ctx context.Context, task string, results []
 		return nil, fmt.Errorf("get language model: %w", err)
 	}
 
-	maxTokens := int64(2000)
+	maxTokens := int64(8192) // Allow room for comprehensive synthesis
 	call := fantasy.Call{
 		Prompt:          fantasy.Prompt{fantasy.NewUserMessage(sb.String())},
 		MaxOutputTokens: &maxTokens,

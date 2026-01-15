@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -254,8 +255,22 @@ func (p *LocalProvider) startServer(ctx context.Context) error {
 		return fmt.Errorf("find server script: %w", err)
 	}
 
+	// Find the venv Python in the same directory as the script
+	// The venv is expected at .venv-embeddings/bin/python3
+	scriptDir := filepath.Dir(scriptPath)
+	venvPython := filepath.Join(scriptDir, ".venv-embeddings", "bin", "python3")
+
+	// Use venv Python if it exists, otherwise fall back to system python3
+	pythonPath := "python3"
+	if _, err := os.Stat(venvPython); err == nil {
+		pythonPath = venvPython
+		slog.Info("Using venv Python for embedding server", "path", venvPython)
+	} else {
+		slog.Warn("Venv Python not found, using system python3", "expected", venvPython)
+	}
+
 	// Start the server
-	p.serverCmd = exec.Command("python3", scriptPath, "--model", p.model)
+	p.serverCmd = exec.Command(pythonPath, scriptPath, "--model", p.model)
 	p.serverCmd.Stdout = os.Stdout
 	p.serverCmd.Stderr = os.Stderr
 

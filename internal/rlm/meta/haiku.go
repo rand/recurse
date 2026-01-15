@@ -42,7 +42,7 @@ func NewHaikuClient(cfg HaikuConfig) (*HaikuClient, error) {
 // Complete implements LLMClient.
 func (h *HaikuClient) Complete(ctx context.Context, prompt string, maxTokens int) (string, error) {
 	if maxTokens == 0 {
-		maxTokens = 500
+		maxTokens = 4096 // Default to 4K tokens for responses
 	}
 
 	// Get language model from provider

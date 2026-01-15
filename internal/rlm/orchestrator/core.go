@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -331,15 +332,17 @@ func (c *Core) executeDirect(ctx context.Context, state meta.State) (string, int
 		}
 	}
 
-	// Estimate output tokens (roughly 2x input for a response)
+	// Estimate output tokens - allow generous output for detailed responses
 	inputTokens := estimateTokens(prompt.String())
-	maxOutputTokens := min(inputTokens*2, 4000) // Cap at 4000 output tokens
+	maxOutputTokens := min(inputTokens*3, 16384) // Allow up to 16K output tokens
 
 	// Call the main LLM to generate a response
+	slog.Debug("executeDirect calling LLM", "inputTokens", inputTokens, "maxOutputTokens", maxOutputTokens)
 	response, err := c.mainClient.Complete(ctx, prompt.String(), maxOutputTokens)
 	if err != nil {
 		return "", inputTokens, fmt.Errorf("main LLM call: %w", err)
 	}
+	slog.Debug("executeDirect LLM response", "responseLen", len(response), "response", response)
 
 	totalTokens := inputTokens + estimateTokens(response)
 	return response, totalTokens, nil

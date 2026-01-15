@@ -288,7 +288,7 @@ func NewOpenRouterClient(cfg OpenRouterConfig) (*OpenRouterClient, error) {
 // Complete implements LLMClient with intelligent model selection.
 func (c *OpenRouterClient) Complete(ctx context.Context, prompt string, maxTokens int) (string, error) {
 	if maxTokens == 0 {
-		maxTokens = 500
+		maxTokens = 4096 // Default to 4K tokens for responses
 	}
 
 	// Extract task context from prompt for model selection

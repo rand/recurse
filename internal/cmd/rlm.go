@@ -106,6 +106,11 @@ recurse rlm --stats
 		event.SetNonInteractive(true)
 		event.AppInitialized()
 
+		// Clear previous trace events for a clean trace view
+		if showTrace {
+			_ = app.RLM.ClearTrace()
+		}
+
 		if !quiet {
 			fmt.Fprintf(os.Stderr, "Executing RLM task...\n")
 		}
