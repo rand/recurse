@@ -46,6 +46,35 @@ func DefaultTaskConfig() TaskMemoryConfig {
 	}
 }
 
+// ExperienceMetadata contains the full metadata stored with experience nodes.
+// This is the JSON structure stored in node.Metadata.
+type ExperienceMetadata struct {
+	// Core fields (always present)
+	Outcome string    `json:"outcome"`
+	Success bool      `json:"success"`
+	Time    time.Time `json:"time"`
+
+	// Extended fields (optional, for richer context)
+	TaskDescription  string   `json:"task_description,omitempty"`  // What was being done
+	Approach         string   `json:"approach,omitempty"`          // How it was approached
+	FilesModified    []string `json:"files_modified,omitempty"`    // File provenance
+	BlockersHit      []string `json:"blockers_hit,omitempty"`      // Obstacles encountered
+	InsightsGained   []string `json:"insights_gained,omitempty"`   // What was learned
+	RelatedDecisions []string `json:"related_decisions,omitempty"` // Links to decision node IDs
+	Duration         string   `json:"duration,omitempty"`          // How long it took
+}
+
+// ExperienceOptions provides optional extended fields when adding experiences.
+type ExperienceOptions struct {
+	TaskDescription  string
+	Approach         string
+	FilesModified    []string
+	BlockersHit      []string
+	InsightsGained   []string
+	RelatedDecisions []string
+	Duration         time.Duration
+}
+
 // TaskMemory manages task-tier working memory.
 // It provides high-level operations for capturing and retrieving
 // facts, snippets, and relations during active problem-solving.
@@ -250,14 +279,38 @@ func (tm *TaskMemory) AddDecision(ctx context.Context, decision string, rational
 }
 
 // AddExperience stores an experience (success/failure) for learning.
+// This is the basic version - use AddExperienceWithOptions for richer context.
 func (tm *TaskMemory) AddExperience(ctx context.Context, description string, outcome string, success bool) (*hypergraph.Node, error) {
+	return tm.AddExperienceWithOptions(ctx, description, outcome, success, nil)
+}
+
+// AddExperienceWithOptions stores an experience with optional extended metadata.
+// The opts parameter can be nil for basic experiences.
+func (tm *TaskMemory) AddExperienceWithOptions(ctx context.Context, description string, outcome string, success bool, opts *ExperienceOptions) (*hypergraph.Node, error) {
 	node := hypergraph.NewNode(hypergraph.NodeTypeExperience, description)
 	node.Tier = hypergraph.TierTask
-	node.Metadata, _ = json.Marshal(map[string]any{
-		"outcome": outcome,
-		"success": success,
-		"time":    time.Now(),
-	})
+
+	// Build metadata with core and optional fields
+	meta := ExperienceMetadata{
+		Outcome: outcome,
+		Success: success,
+		Time:    time.Now(),
+	}
+
+	// Add extended fields if provided
+	if opts != nil {
+		meta.TaskDescription = opts.TaskDescription
+		meta.Approach = opts.Approach
+		meta.FilesModified = opts.FilesModified
+		meta.BlockersHit = opts.BlockersHit
+		meta.InsightsGained = opts.InsightsGained
+		meta.RelatedDecisions = opts.RelatedDecisions
+		if opts.Duration > 0 {
+			meta.Duration = opts.Duration.String()
+		}
+	}
+
+	node.Metadata, _ = json.Marshal(meta)
 
 	// Successful experiences have higher confidence
 	if success {

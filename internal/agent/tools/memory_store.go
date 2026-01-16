@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/rand/recurse/internal/memory/hypergraph"
@@ -33,6 +34,15 @@ type MemoryStoreParams struct {
 	Alternatives []string `json:"alternatives,omitempty" description:"Alternatives considered for decisions"`
 	Outcome      string   `json:"outcome,omitempty" description:"Outcome for experiences"`
 	Success      bool     `json:"success,omitempty" description:"Whether experience was successful"`
+
+	// Extended experience fields (optional, for richer context)
+	TaskDescription  string   `json:"task_description,omitempty" description:"What task was being worked on"`
+	Approach         string   `json:"approach,omitempty" description:"How the task was approached"`
+	FilesModified    []string `json:"files_modified,omitempty" description:"Files that were modified"`
+	BlockersHit      []string `json:"blockers_hit,omitempty" description:"Obstacles encountered"`
+	InsightsGained   []string `json:"insights_gained,omitempty" description:"What was learned"`
+	RelatedDecisions []string `json:"related_decisions,omitempty" description:"IDs of related decision nodes"`
+	DurationSecs     int      `json:"duration_secs,omitempty" description:"Duration in seconds"`
 }
 
 // MemoryStoreResult contains the result of storing to memory.
@@ -86,7 +96,23 @@ func NewMemoryStoreTool(taskMemory *tiers.TaskMemory) fantasy.AgentTool {
 				nodeType = "decision"
 
 			case "experience":
-				node, err = taskMemory.AddExperience(ctx, params.Content, params.Outcome, params.Success)
+				// Build options if any extended fields provided
+				var opts *tiers.ExperienceOptions
+				if params.TaskDescription != "" || params.Approach != "" ||
+					len(params.FilesModified) > 0 || len(params.BlockersHit) > 0 ||
+					len(params.InsightsGained) > 0 || len(params.RelatedDecisions) > 0 ||
+					params.DurationSecs > 0 {
+					opts = &tiers.ExperienceOptions{
+						TaskDescription:  params.TaskDescription,
+						Approach:         params.Approach,
+						FilesModified:    params.FilesModified,
+						BlockersHit:      params.BlockersHit,
+						InsightsGained:   params.InsightsGained,
+						RelatedDecisions: params.RelatedDecisions,
+						Duration:         time.Duration(params.DurationSecs) * time.Second,
+					}
+				}
+				node, err = taskMemory.AddExperienceWithOptions(ctx, params.Content, params.Outcome, params.Success, opts)
 				nodeType = "experience"
 
 			default:

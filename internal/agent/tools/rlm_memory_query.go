@@ -28,12 +28,13 @@ type RLMMemoryQueryParams struct {
 }
 
 type RLMMemoryNode struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"`
-	Content    string    `json:"content"`
-	Confidence float64   `json:"confidence"`
-	Tier       string    `json:"tier"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID         string          `json:"id"`
+	Type       string          `json:"type"`
+	Content    string          `json:"content"`
+	Metadata   json.RawMessage `json:"metadata,omitempty"`
+	Confidence float64         `json:"confidence"`
+	Tier       string          `json:"tier"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
 
 type RLMMemoryQueryResult struct {
@@ -96,6 +97,7 @@ func NewRLMMemoryQueryTool(rlmService *rlm.Service) fantasy.AgentTool {
 					ID:         node.ID,
 					Type:       string(node.Type),
 					Content:    node.Content,
+					Metadata:   node.Metadata,
 					Confidence: node.Confidence,
 					Tier:       string(node.Tier),
 					CreatedAt:  node.CreatedAt,
@@ -113,14 +115,10 @@ func NewRLMMemoryQueryTool(rlmService *rlm.Service) fantasy.AgentTool {
 			} else {
 				for i, n := range result.Nodes {
 					lines = append(lines, "")
-					idPrefix := n.ID
-					if len(idPrefix) > 8 {
-						idPrefix = idPrefix[:8]
-					}
 					lines = append(lines, fmt.Sprintf("[%d] %s (%s) - %s", i+1, n.Type, n.Tier, n.CreatedAt.Format("2006-01-02 15:04")))
 
-					// Format content based on type
-					summary := formatNodeContent(n.Type, n.Content)
+					// Format content and metadata based on type
+					summary := formatNodeContent(n.Type, n.Content, n.Metadata)
 					lines = append(lines, fmt.Sprintf("    %s", summary))
 				}
 			}
@@ -132,78 +130,139 @@ func NewRLMMemoryQueryTool(rlmService *rlm.Service) fantasy.AgentTool {
 		})
 }
 
-// formatNodeContent extracts a human-readable summary from node content.
-func formatNodeContent(nodeType, content string) string {
-	// Try to parse as JSON and extract meaningful fields
-	var data map[string]any
-	if err := json.Unmarshal([]byte(content), &data); err == nil {
-		return formatJSONContent(nodeType, data)
+// formatNodeContent extracts a human-readable summary from node content and metadata.
+func formatNodeContent(nodeType, content string, metadata json.RawMessage) string {
+	var parts []string
+
+	// Always show the content (the main description) first
+	if content != "" {
+		displayContent := content
+		if len(displayContent) > 150 {
+			displayContent = displayContent[:150] + "..."
+		}
+		parts = append(parts, displayContent)
 	}
 
-	// Not JSON - just truncate plain text
-	if len(content) > 150 {
-		return content[:150] + "..."
+	// Parse metadata for additional context
+	if len(metadata) > 0 {
+		var meta map[string]any
+		if err := json.Unmarshal(metadata, &meta); err == nil {
+			extraInfo := formatMetadata(nodeType, meta)
+			if extraInfo != "" {
+				parts = append(parts, extraInfo)
+			}
+		}
 	}
-	return content
+
+	if len(parts) == 0 {
+		return "(no content)"
+	}
+	return strings.Join(parts, "\n    ")
 }
 
-// formatJSONContent formats JSON data based on node type.
-func formatJSONContent(nodeType string, data map[string]any) string {
+// formatMetadata formats metadata fields based on node type.
+func formatMetadata(nodeType string, meta map[string]any) string {
 	switch nodeType {
 	case "experience":
-		// Session metadata
-		var parts []string
-		if id, ok := data["id"].(string); ok {
-			// Extract just the timestamp part from session ID
-			if strings.HasPrefix(id, "session-") {
-				parts = append(parts, fmt.Sprintf("Session %s", id[8:]))
+		var details []string
+
+		// Show outcome if present
+		if outcome, ok := meta["outcome"].(string); ok && outcome != "" {
+			outcomeDisplay := outcome
+			if len(outcomeDisplay) > 100 {
+				outcomeDisplay = outcomeDisplay[:100] + "..."
 			}
-		}
-		if duration, ok := data["duration"].(string); ok {
-			parts = append(parts, fmt.Sprintf("Duration: %s", duration))
-		}
-		if startTime, ok := data["start_time"].(string); ok {
-			if t, err := time.Parse(time.RFC3339, startTime); err == nil {
-				parts = append(parts, fmt.Sprintf("Started: %s", t.Format("Jan 2 15:04")))
-			}
-		}
-		if len(parts) > 0 {
-			return strings.Join(parts, " | ")
+			details = append(details, fmt.Sprintf("Outcome: %s", outcomeDisplay))
 		}
 
-	case "fact":
-		// Try to extract key facts
-		if content, ok := data["content"].(string); ok {
-			if len(content) > 150 {
-				return content[:150] + "..."
+		// Show success/failure
+		if success, ok := meta["success"].(bool); ok {
+			if success {
+				details = append(details, "Status: Success")
+			} else {
+				details = append(details, "Status: Failed")
 			}
-			return content
 		}
+
+		// Show insights if present
+		if insights, ok := meta["insights_gained"].([]any); ok && len(insights) > 0 {
+			insightStrs := make([]string, 0, len(insights))
+			for _, i := range insights {
+				if s, ok := i.(string); ok {
+					insightStrs = append(insightStrs, s)
+				}
+			}
+			if len(insightStrs) > 0 {
+				details = append(details, fmt.Sprintf("Insights: %s", strings.Join(insightStrs, "; ")))
+			}
+		}
+
+		// Show blockers if present
+		if blockers, ok := meta["blockers_hit"].([]any); ok && len(blockers) > 0 {
+			blockerStrs := make([]string, 0, len(blockers))
+			for _, b := range blockers {
+				if s, ok := b.(string); ok {
+					blockerStrs = append(blockerStrs, s)
+				}
+			}
+			if len(blockerStrs) > 0 {
+				details = append(details, fmt.Sprintf("Blockers: %s", strings.Join(blockerStrs, "; ")))
+			}
+		}
+
+		// Show duration if present
+		if duration, ok := meta["duration"].(string); ok && duration != "" {
+			details = append(details, fmt.Sprintf("Duration: %s", duration))
+		}
+
+		return strings.Join(details, " | ")
 
 	case "decision":
-		// Extract decision info
-		var parts []string
-		if choice, ok := data["choice"].(string); ok {
-			parts = append(parts, fmt.Sprintf("Choice: %s", choice))
-		}
-		if reason, ok := data["reason"].(string); ok {
-			if len(reason) > 100 {
-				reason = reason[:100] + "..."
+		var details []string
+
+		if rationale, ok := meta["rationale"].(string); ok && rationale != "" {
+			rationaleDisplay := rationale
+			if len(rationaleDisplay) > 100 {
+				rationaleDisplay = rationaleDisplay[:100] + "..."
 			}
-			parts = append(parts, fmt.Sprintf("Reason: %s", reason))
+			details = append(details, fmt.Sprintf("Rationale: %s", rationaleDisplay))
 		}
-		if len(parts) > 0 {
-			return strings.Join(parts, " | ")
+
+		if alts, ok := meta["alternatives"].([]any); ok && len(alts) > 0 {
+			altStrs := make([]string, 0, len(alts))
+			for _, a := range alts {
+				if s, ok := a.(string); ok {
+					altStrs = append(altStrs, s)
+				}
+			}
+			if len(altStrs) > 0 {
+				details = append(details, fmt.Sprintf("Alternatives: %s", strings.Join(altStrs, ", ")))
+			}
 		}
+
+		return strings.Join(details, " | ")
+
+	case "fact":
+		var details []string
+
+		if confidence, ok := meta["confidence"].(float64); ok {
+			details = append(details, fmt.Sprintf("Confidence: %.0f%%", confidence*100))
+		}
+
+		return strings.Join(details, " | ")
+
+	case "snippet":
+		var details []string
+
+		if file, ok := meta["file"].(string); ok && file != "" {
+			details = append(details, fmt.Sprintf("File: %s", file))
+		}
+		if line, ok := meta["line"].(float64); ok && line > 0 {
+			details = append(details, fmt.Sprintf("Line: %d", int(line)))
+		}
+
+		return strings.Join(details, " | ")
 	}
 
-	// Fallback: show top-level keys
-	var keys []string
-	for k := range data {
-		keys = append(keys, k)
-	}
-	if len(keys) > 5 {
-		keys = keys[:5]
-	}
-	return fmt.Sprintf("Fields: %s", strings.Join(keys, ", "))
+	return ""
 }
