@@ -549,11 +549,93 @@ func (tm *TraceManager) getActionsForDecision(ctx context.Context, decisionID st
 				NodeID:        child.NodeID,
 			}
 
-			// TODO: Load associated diff snippets
+			// Load associated diff snippets
+			diffs, err := tm.getDiffsForAction(ctx, child.NodeID)
+			if err == nil && len(diffs) > 0 {
+				action.Diffs = diffs
+			}
+
 			actions = append(actions, action)
 		}
 	}
 	return actions, nil
+}
+
+// getDiffsForAction retrieves diff records associated with an action node.
+// Diffs are stored as snippet nodes linked via HyperedgeContext edges.
+func (tm *TraceManager) getDiffsForAction(ctx context.Context, actionID string) ([]DiffRecord, error) {
+	// Get all hyperedges connected to this action
+	edges, err := tm.store.GetNodeHyperedges(ctx, actionID)
+	if err != nil {
+		return nil, err
+	}
+
+	var diffs []DiffRecord
+	for _, edge := range edges {
+		// Only look at context edges (used for action → diff snippet links)
+		if edge.Type != hypergraph.HyperedgeContext {
+			continue
+		}
+
+		// Get member nodes of this hyperedge
+		members, err := tm.store.GetMembers(ctx, edge.ID)
+		if err != nil {
+			continue
+		}
+
+		// Find snippet nodes in this edge (object role)
+		for _, member := range members {
+			if member.Role != hypergraph.RoleObject {
+				continue
+			}
+
+			// Get the snippet node
+			node, err := tm.store.GetNode(ctx, member.NodeID)
+			if err != nil {
+				continue
+			}
+
+			// Only process diff snippets
+			if node.Type != hypergraph.NodeTypeSnippet || node.Subtype != "diff" {
+				continue
+			}
+
+			// Parse provenance for file path and commit hash
+			diff := DiffRecord{
+				UnifiedDiff: node.Content,
+			}
+
+			if len(node.Provenance) > 0 {
+				var prov hypergraph.Provenance
+				if err := json.Unmarshal(node.Provenance, &prov); err == nil {
+					diff.FilePath = prov.File
+					diff.CommitHash = prov.CommitHash
+				}
+			}
+
+			// Parse metadata for additions/removals/captured_at
+			if len(node.Metadata) > 0 {
+				var meta map[string]any
+				if err := json.Unmarshal(node.Metadata, &meta); err == nil {
+					if additions, ok := meta["additions"].(float64); ok {
+						diff.Additions = int(additions)
+					}
+					if removals, ok := meta["removals"].(float64); ok {
+						diff.Removals = int(removals)
+					}
+					if capturedAt, ok := meta["captured_at"].(string); ok {
+						if t, err := time.Parse(time.RFC3339Nano, capturedAt); err == nil {
+							diff.CapturedAt = t
+						}
+					}
+				}
+			}
+
+			diffs = append(diffs, diff)
+		}
+	}
+
+	return diffs, nil
 }
 
 func scanDecisionNode(rows *sql.Rows) (*DecisionNode, error) {
