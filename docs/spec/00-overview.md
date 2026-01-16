@@ -5,7 +5,7 @@
 ## Project Status
 
 **Phase**: Complete
-**Core Implementation**: All specs implemented (SPEC-01 through SPEC-07)
+**Core Implementation**: All specs implemented (SPEC-01 through SPEC-09)
 **Next Phase**: Testing, refinement, and new feature specs as needed
 
 ## Architecture Summary
@@ -41,6 +41,8 @@
 | [SPEC-05](./05-context-compression.md) | Context Compression | Complete | P2 |
 | [SPEC-06](./06-meta-evolution.md) | Meta-Evolution | Complete | P3 |
 | [SPEC-07](./07-budget-management.md) | Budget Management | Complete | P1 |
+| [SPEC-08](./08-hallucination-detection.md) | Hallucination Detection | Complete | P2 |
+| [SPEC-09](./09-session-context-persistence.md) | Session Context Persistence | Complete | P1 |
 
 ## Implementation Order
 

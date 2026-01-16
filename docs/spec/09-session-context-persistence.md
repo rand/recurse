@@ -352,29 +352,30 @@ When agent asks "What was I working on?":
 
 ## Implementation Tasks
 
-### Phase 1: Fix REPL Activation (Critical)
-- [ ] [SPEC-09.03] Synchronous REPL startup in app.go
-- [ ] [SPEC-09.03] Error surfacing to user (not just warnings)
-- [ ] [SPEC-09.04] REPL activation trigger in tools
-- [ ] Add REPL health check endpoint for TUI
+### Phase 1: Fix REPL Activation (Critical) ✅
+- [x] [SPEC-09.03] Synchronous REPL startup in app.go (commit 23b83d8)
+- [x] [SPEC-09.03] Error surfacing to user via REPLStatusMsg (commit 23b83d8)
+- [x] [SPEC-09.04] REPL activation trigger in tools via ensureREPLRunning() (commit 23b83d8)
+- [x] Add REPL health check endpoint for TUI via REPLStatusMsg (commit 23b83d8)
 
-### Phase 2: Enhance Memory Content
-- [ ] [SPEC-09.02] Expand ExperienceMetadata struct
-- [ ] [SPEC-09.02] Update AddExperience() to accept rich metadata
-- [ ] [SPEC-09.07] Fix formatNodeContent() for proper display
-- [ ] Add migration for existing experience nodes
+### Phase 2: Enhance Memory Content ✅
+- [x] [SPEC-09.02] Expand ExperienceMetadata struct (internal/memory/tiers/task.go)
+- [x] [SPEC-09.02] Update AddExperience() to accept rich metadata (AddExperienceWithOptions)
+- [x] [SPEC-09.02] Extend REPL protocol with rich experience fields (commit d22a439)
+- [ ] [SPEC-09.07] Fix formatNodeContent() for proper display (optional - display concern)
+- [ ] Add migration for existing experience nodes (optional - new nodes use rich format)
 
-### Phase 3: Session Synthesis
-- [ ] [SPEC-09.01] Define SessionSummary type
-- [ ] [SPEC-09.01] Implement reflection pass using LLM
-- [ ] [SPEC-09.01] Create session summary node on SessionEnd()
-- [ ] [SPEC-09.08] Implement ResumeSession() query
+### Phase 3: Session Synthesis ✅
+- [x] [SPEC-09.01] Define SessionSummary type (internal/rlm/synthesizer.go)
+- [x] [SPEC-09.01] Implement reflection pass using LLM (LLMSynthesizer)
+- [x] [SPEC-09.01] Create session summary node on SessionEnd() (lifecycle.go)
+- [x] [SPEC-09.08] Implement ResumeSession() query (service.go)
 
-### Phase 4: Orchestrator Integration
-- [ ] [SPEC-09.05] Add ActionExecute to meta-controller
-- [ ] [SPEC-09.05] Implement executeREPL() handler
-- [ ] [SPEC-09.06] Wire Wrapper.PrepareContext() into orchestrate()
-- [ ] Update meta-controller prompt with EXECUTE guidance
+### Phase 4: Orchestrator Integration ✅
+- [x] [SPEC-09.05] Add ActionExecute to meta-controller (meta/controller.go)
+- [x] [SPEC-09.05] Implement executeREPL() handler (orchestrator/core.go)
+- [x] [SPEC-09.06] Wire Wrapper.PrepareContext() into orchestrate() (commit 428539a)
+- [x] Update meta-controller prompt with EXECUTE guidance (meta/controller.go)
 
 ## Dependencies
 
