@@ -86,6 +86,12 @@ func NewRLMMemoryQueryTool(rlmService *rlm.Service) fantasy.AgentTool {
 				return fantasy.ToolResponse{}, fmt.Errorf("query nodes: %w", err)
 			}
 
+			// Increment access count for returned nodes (fixes promotion bug)
+			// [recurse-dts] Nodes need access tracking to ever reach longterm tier
+			for _, node := range nodes {
+				store.IncrementAccess(ctx, node.ID)
+			}
+
 			// Convert to result format
 			result := RLMMemoryQueryResult{
 				Nodes:      make([]RLMMemoryNode, 0, len(nodes)),
