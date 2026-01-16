@@ -228,6 +228,10 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		return nil, fmt.Errorf("create lifecycle manager: %w", err)
 	}
 
+	// Wire audit logger to hypergraph store for database persistence
+	// [recurse-0uv] Fixes: evolution audit log not persisting to database
+	lifecycle.AuditLogger().SetStore(store)
+
 	// Create meta-evolution manager for schema adaptation [SPEC-06]
 	outcomeStore := evolution.NewSQLiteOutcomeStore(store)
 	proposalStore := evolution.NewSQLiteProposalStore(store)
