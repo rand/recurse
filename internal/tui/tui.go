@@ -839,6 +839,12 @@ func (a *appModel) createPanelView() panelview.PanelViewDialog {
 func New(app *app.App) *appModel {
 	chatPage := chat.New(app)
 	keyMap := DefaultKeyMap()
+
+	// Apply custom keybindings from config
+	if cfg := app.Config(); cfg != nil && cfg.Options != nil && cfg.Options.TUI != nil {
+		keyMap.ApplyConfig(cfg.Options.TUI.Keybindings)
+	}
+
 	keyMap.pageBindings = chatPage.Bindings()
 
 	model := &appModel{

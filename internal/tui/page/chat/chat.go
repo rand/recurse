@@ -137,13 +137,30 @@ type chatPage struct {
 
 func New(app *app.App) ChatPage {
 	t := styles.CurrentTheme()
+
+	// Create input history with memory-backed persistence if available
+	var inputHistory *editor.InputHistory
+	cfg := app.Config()
+	historyConfig := cfg.Options.TUI.History
+	if historyConfig.IsEnabled() {
+		maxItems := historyConfig.GetMaxItems()
+		if app.MemoryStore != nil && historyConfig.IsPersistent() {
+			// Use hypergraph memory for persistent history
+			promptStore := editor.NewMemoryPromptStore(app.MemoryStore.Store())
+			inputHistory = editor.NewInputHistoryWithStore(promptStore, maxItems)
+		} else {
+			// Fallback to in-memory only
+			inputHistory = editor.NewInputHistory("", maxItems, false)
+		}
+	}
+
 	return &chatPage{
 		app:         app,
 		keyMap:      DefaultKeyMap(),
 		header:      header.New(app.LSPClients),
 		sidebar:     sidebar.New(app.History, app.LSPClients, false),
 		chat:        chat.New(app),
-		editor:      editor.New(app),
+		editor:      editor.New(app, editor.EditorOptions{History: inputHistory}),
 		splash:      splash.New(),
 		focusedPane: PanelTypeSplash,
 		todoSpinner: spinner.New(

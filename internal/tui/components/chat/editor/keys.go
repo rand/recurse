@@ -2,6 +2,7 @@ package editor
 
 import (
 	"charm.land/bubbles/v2/key"
+	"github.com/rand/recurse/internal/config"
 )
 
 type EditorKeyMap struct {
@@ -9,6 +10,8 @@ type EditorKeyMap struct {
 	SendMessage key.Binding
 	OpenEditor  key.Binding
 	Newline     key.Binding
+	PrevHistory key.Binding
+	NextHistory key.Binding
 }
 
 func DefaultEditorKeyMap() EditorKeyMap {
@@ -32,6 +35,39 @@ func DefaultEditorKeyMap() EditorKeyMap {
 			// to reflect that.
 			key.WithHelp("ctrl+j", "newline"),
 		),
+		PrevHistory: key.NewBinding(
+			key.WithKeys("up"),
+			key.WithHelp("↑", "prev input"),
+		),
+		NextHistory: key.NewBinding(
+			key.WithKeys("down"),
+			key.WithHelp("↓", "next input"),
+		),
+	}
+}
+
+// ApplyConfig applies custom keybindings from configuration.
+func (k *EditorKeyMap) ApplyConfig(cfg *config.KeybindingsConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.AddFile != "" {
+		k.AddFile = key.NewBinding(key.WithKeys(cfg.AddFile), key.WithHelp(cfg.AddFile, "add file"))
+	}
+	if cfg.SendMessage != "" {
+		k.SendMessage = key.NewBinding(key.WithKeys(cfg.SendMessage), key.WithHelp(cfg.SendMessage, "send"))
+	}
+	if cfg.OpenEditor != "" {
+		k.OpenEditor = key.NewBinding(key.WithKeys(cfg.OpenEditor), key.WithHelp(cfg.OpenEditor, "open editor"))
+	}
+	if cfg.Newline != "" {
+		k.Newline = key.NewBinding(key.WithKeys(cfg.Newline), key.WithHelp(cfg.Newline, "newline"))
+	}
+	if cfg.PrevHistory != "" {
+		k.PrevHistory = key.NewBinding(key.WithKeys(cfg.PrevHistory), key.WithHelp(cfg.PrevHistory, "prev input"))
+	}
+	if cfg.NextHistory != "" {
+		k.NextHistory = key.NewBinding(key.WithKeys(cfg.NextHistory), key.WithHelp(cfg.NextHistory, "next input"))
 	}
 }
 
@@ -42,6 +78,8 @@ func (k EditorKeyMap) KeyBindings() []key.Binding {
 		k.SendMessage,
 		k.OpenEditor,
 		k.Newline,
+		k.PrevHistory,
+		k.NextHistory,
 		AttachmentsKeyMaps.AttachmentDeleteMode,
 		AttachmentsKeyMaps.DeleteAllAttachments,
 		AttachmentsKeyMaps.Escape,

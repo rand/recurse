@@ -194,10 +194,66 @@ type LSPConfig struct {
 type TUIOptions struct {
 	CompactMode bool   `json:"compact_mode,omitempty" jsonschema:"description=Enable compact mode for the TUI interface,default=false"`
 	DiffMode    string `json:"diff_mode,omitempty" jsonschema:"description=Diff mode for the TUI interface,enum=unified,enum=split"`
-	// Here we can add themes later or any TUI related options
-	//
 
-	Completions Completions `json:"completions,omitzero" jsonschema:"description=Completions UI options"`
+	Completions Completions     `json:"completions,omitzero" jsonschema:"description=Completions UI options"`
+	Keybindings *KeybindingsConfig `json:"keybindings,omitempty" jsonschema:"description=Custom keybinding configuration"`
+	History     *HistoryConfig     `json:"history,omitempty" jsonschema:"description=Input history configuration"`
+}
+
+// KeybindingsConfig allows customizing keyboard shortcuts.
+type KeybindingsConfig struct {
+	// Global keybindings
+	Quit       string `json:"quit,omitempty" jsonschema:"description=Quit the application,default=ctrl+c"`
+	Help       string `json:"help,omitempty" jsonschema:"description=Show help,default=ctrl+g"`
+	Commands   string `json:"commands,omitempty" jsonschema:"description=Open command palette,default=ctrl+p"`
+	Suspend    string `json:"suspend,omitempty" jsonschema:"description=Suspend to shell,default=ctrl+z"`
+	Models     string `json:"models,omitempty" jsonschema:"description=Open model selector,default=ctrl+l"`
+	Sessions   string `json:"sessions,omitempty" jsonschema:"description=Open sessions dialog,default=ctrl+s"`
+	RLMTrace   string `json:"rlm_trace,omitempty" jsonschema:"description=Open RLM trace viewer,default=ctrl+t"`
+	Memory     string `json:"memory,omitempty" jsonschema:"description=Open memory viewer,default=ctrl+b"`
+	REPLOutput string `json:"repl_output,omitempty" jsonschema:"description=Open REPL output,default=ctrl+r"`
+	PanelView  string `json:"panel_view,omitempty" jsonschema:"description=Toggle panel view,default=ctrl+e"`
+
+	// Editor keybindings
+	AddFile     string `json:"add_file,omitempty" jsonschema:"description=Open file picker,default=/"`
+	SendMessage string `json:"send_message,omitempty" jsonschema:"description=Send message,default=enter"`
+	OpenEditor  string `json:"open_editor,omitempty" jsonschema:"description=Open external editor,default=ctrl+o"`
+	Newline     string `json:"newline,omitempty" jsonschema:"description=Insert newline,default=ctrl+j"`
+
+	// History navigation
+	PrevHistory string `json:"prev_history,omitempty" jsonschema:"description=Navigate to previous input,default=up"`
+	NextHistory string `json:"next_history,omitempty" jsonschema:"description=Navigate to next input,default=down"`
+}
+
+// HistoryConfig configures input history behavior.
+type HistoryConfig struct {
+	Enabled    *bool `json:"enabled,omitempty" jsonschema:"description=Enable input history,default=true"`
+	MaxItems   int   `json:"max_items,omitempty" jsonschema:"description=Maximum history items to keep,default=1000"`
+	Persistent *bool `json:"persistent,omitempty" jsonschema:"description=Persist history across sessions,default=true"`
+}
+
+// IsEnabled returns whether history is enabled (defaults to true).
+func (h *HistoryConfig) IsEnabled() bool {
+	if h == nil || h.Enabled == nil {
+		return true
+	}
+	return *h.Enabled
+}
+
+// IsPersistent returns whether history should persist (defaults to true).
+func (h *HistoryConfig) IsPersistent() bool {
+	if h == nil || h.Persistent == nil {
+		return true
+	}
+	return *h.Persistent
+}
+
+// GetMaxItems returns the max history items (defaults to 1000).
+func (h *HistoryConfig) GetMaxItems() int {
+	if h == nil || h.MaxItems <= 0 {
+		return 1000
+	}
+	return h.MaxItems
 }
 
 // Completions defines options for the completions UI.

@@ -41,6 +41,11 @@ func (a *MemoryStoreAdapter) Search(query string, limit int) ([]*hypergraph.Node
 	return nodes, nil
 }
 
+// Store returns the underlying hypergraph store.
+func (a *MemoryStoreAdapter) Store() *hypergraph.Store {
+	return a.store
+}
+
 // GetStats returns memory statistics.
 func (a *MemoryStoreAdapter) GetStats() (memory.MemoryStats, error) {
 	ctx := context.Background()

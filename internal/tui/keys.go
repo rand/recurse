@@ -2,6 +2,7 @@ package tui
 
 import (
 	"charm.land/bubbles/v2/key"
+	"github.com/rand/recurse/internal/config"
 )
 
 type KeyMap struct {
@@ -61,5 +62,42 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+e"),
 			key.WithHelp("ctrl+e", "panels"),
 		),
+	}
+}
+
+// ApplyConfig applies custom keybindings from configuration.
+func (km *KeyMap) ApplyConfig(cfg *config.KeybindingsConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.Quit != "" {
+		km.Quit = key.NewBinding(key.WithKeys(cfg.Quit), key.WithHelp(cfg.Quit, "quit"))
+	}
+	if cfg.Help != "" {
+		km.Help = key.NewBinding(key.WithKeys(cfg.Help), key.WithHelp(cfg.Help, "more"))
+	}
+	if cfg.Commands != "" {
+		km.Commands = key.NewBinding(key.WithKeys(cfg.Commands), key.WithHelp(cfg.Commands, "commands"))
+	}
+	if cfg.Suspend != "" {
+		km.Suspend = key.NewBinding(key.WithKeys(cfg.Suspend), key.WithHelp(cfg.Suspend, "suspend"))
+	}
+	if cfg.Models != "" {
+		km.Models = key.NewBinding(key.WithKeys(cfg.Models), key.WithHelp(cfg.Models, "models"))
+	}
+	if cfg.Sessions != "" {
+		km.Sessions = key.NewBinding(key.WithKeys(cfg.Sessions), key.WithHelp(cfg.Sessions, "sessions"))
+	}
+	if cfg.RLMTrace != "" {
+		km.RLMTrace = key.NewBinding(key.WithKeys(cfg.RLMTrace), key.WithHelp(cfg.RLMTrace, "trace"))
+	}
+	if cfg.Memory != "" {
+		km.Memory = key.NewBinding(key.WithKeys(cfg.Memory), key.WithHelp(cfg.Memory, "memory"))
+	}
+	if cfg.REPLOutput != "" {
+		km.REPLOutput = key.NewBinding(key.WithKeys(cfg.REPLOutput), key.WithHelp(cfg.REPLOutput, "repl"))
+	}
+	if cfg.PanelView != "" {
+		km.PanelView = key.NewBinding(key.WithKeys(cfg.PanelView), key.WithHelp(cfg.PanelView, "panels"))
 	}
 }

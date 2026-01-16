@@ -70,6 +70,9 @@ type editorCmp struct {
 	currentQuery          string
 	completionsStartIndex int
 	isCompletionsOpen     bool
+
+	// Input history
+	history *InputHistory
 }
 
 var DeleteKeyMaps = DeleteAttachmentKeyMaps{
@@ -149,6 +152,11 @@ func (m *editorCmp) send() tea.Cmd {
 
 	if value == "" && !message.ContainsTextAttachment(attachments) {
 		return nil
+	}
+
+	// Add to history before clearing
+	if m.history != nil && value != "" {
+		m.history.Add(value)
 	}
 
 	m.textarea.Reset()
@@ -337,6 +345,30 @@ func (m *editorCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		if key.Matches(msg, m.keyMap.Newline) {
 			m.textarea.InsertRune('\n')
 			cmds = append(cmds, util.CmdHandler(completions.CloseCompletionsMsg{}))
+		}
+		// History navigation - only when on first/last line or empty
+		if m.history != nil && m.textarea.Focused() && !m.isCompletionsOpen {
+			cursor := m.textarea.Cursor()
+			isFirstLine := cursor == nil || cursor.Y == 0
+			// For single line inputs, allow history navigation
+			lineCount := strings.Count(m.textarea.Value(), "\n") + 1
+			isLastLine := cursor == nil || cursor.Y >= lineCount-1
+
+			if key.Matches(msg, m.keyMap.PrevHistory) && isFirstLine {
+				m.history.StartNavigation(m.textarea.Value())
+				if prev, ok := m.history.Previous(); ok {
+					m.textarea.SetValue(prev)
+					m.textarea.MoveToEnd()
+					return m, nil
+				}
+			}
+			if key.Matches(msg, m.keyMap.NextHistory) && isLastLine {
+				if next, ok := m.history.Next(); ok {
+					m.textarea.SetValue(next)
+					m.textarea.MoveToEnd()
+					return m, nil
+				}
+			}
 		}
 		// Handle Enter key
 		if m.textarea.Focused() && key.Matches(msg, m.keyMap.SendMessage) {
@@ -621,7 +653,12 @@ func yoloPromptFunc(info textarea.PromptInfo) string {
 	return fmt.Sprintf("%s ", t.YoloDotsBlurred)
 }
 
-func New(app *app.App) Editor {
+// EditorOptions configures the editor component.
+type EditorOptions struct {
+	History *InputHistory
+}
+
+func New(app *app.App, opts ...EditorOptions) Editor {
 	t := styles.CurrentTheme()
 	ta := textarea.New()
 	ta.SetStyles(t.S().TextArea)
@@ -629,12 +666,26 @@ func New(app *app.App) Editor {
 	ta.CharLimit = -1
 	ta.SetVirtualCursor(false)
 	ta.Focus()
+
+	keyMap := DefaultEditorKeyMap()
+	// Apply custom keybindings from config
+	if cfg := app.Config(); cfg != nil && cfg.Options != nil && cfg.Options.TUI != nil {
+		keyMap.ApplyConfig(cfg.Options.TUI.Keybindings)
+	}
+
 	e := &editorCmp{
 		// TODO: remove the app instance from here
 		app:      app,
 		textarea: ta,
-		keyMap:   DefaultEditorKeyMap(),
+		keyMap:   keyMap,
 	}
+
+	// Apply options
+	if len(opts) > 0 {
+		opt := opts[0]
+		e.history = opt.History
+	}
+
 	e.setEditorPrompt()
 
 	e.randomizePlaceholders()
