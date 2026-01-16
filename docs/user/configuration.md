@@ -58,6 +58,12 @@ options:
   tui:
     compact_mode: false
     diff_mode: unified
+    keybindings:
+      commands: "ctrl+k"        # Change from ctrl+p to avoid conflicts
+    history:
+      enabled: true
+      max_items: 1000
+      persistent: true          # Persist across sessions via memory
 ```
 
 ## Environment Variables
@@ -284,6 +290,27 @@ options:
     completions:
       max_depth: integer        # Max depth for ls tool
       max_items: integer        # Max items for ls tool
+    keybindings:                # Customize keyboard shortcuts
+      quit: string              # Quit (default: ctrl+c)
+      help: string              # Show help (default: ctrl+g)
+      commands: string          # Command palette (default: ctrl+p)
+      suspend: string           # Suspend to shell (default: ctrl+z)
+      models: string            # Model selector (default: ctrl+l)
+      sessions: string          # Sessions dialog (default: ctrl+s)
+      rlm_trace: string         # RLM trace viewer (default: ctrl+t)
+      memory: string            # Memory viewer (default: ctrl+b)
+      repl_output: string       # REPL output (default: ctrl+r)
+      panel_view: string        # Panel view (default: ctrl+e)
+      add_file: string          # File picker (default: /)
+      send_message: string      # Send message (default: enter)
+      open_editor: string       # External editor (default: ctrl+o)
+      newline: string           # Insert newline (default: ctrl+j)
+      prev_history: string      # Previous input (default: up)
+      next_history: string      # Next input (default: down)
+    history:                    # Input history settings
+      enabled: boolean          # Enable history (default: true)
+      max_items: integer        # Max items to keep (default: 1000)
+      persistent: boolean       # Persist across sessions (default: true)
   attribution:
     trailer_style: string       # none | co-authored-by | assisted-by
     generated_with: boolean     # Add "Generated with Recurse" line

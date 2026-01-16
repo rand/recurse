@@ -162,7 +162,9 @@ See [docs/benchmark-results.md](docs/benchmark-results.md) for detailed analysis
 | `Ctrl+S` | Switch session |
 | `Ctrl+L` | Switch model |
 | `Ctrl+G` | Toggle help |
-| `Ctrl+N` | New session |
+| `↑` / `↓` | Navigate input history |
+
+All shortcuts are customizable via `options.tui.keybindings` in your config file. See [docs/user/configuration.md](docs/user/configuration.md) for details.
 
 ### Inspecting RLM Behavior
 
