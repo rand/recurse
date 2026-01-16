@@ -512,11 +512,29 @@ func (m *Manager) handleCallback(ctx context.Context, data []byte) error {
 		if m.memoryHandler == nil {
 			resp.Error = "Memory callback handler not configured"
 		} else {
-			content, _ := req.Params["content"].(string)
-			outcome, _ := req.Params["outcome"].(string)
-			success, _ := req.Params["success"].(bool)
+			// Parse params including extended fields [SPEC-09.02]
+			params := MemoryAddExperienceParams{
+				Content: getString(req.Params, "content"),
+				Outcome: getString(req.Params, "outcome"),
+				Success: getBool(req.Params, "success"),
+				// Extended fields
+				TaskDescription:  getString(req.Params, "task_description"),
+				Approach:         getString(req.Params, "approach"),
+				FilesModified:    getStringSlice(req.Params, "files_modified"),
+				BlockersHit:      getStringSlice(req.Params, "blockers_hit"),
+				InsightsGained:   getStringSlice(req.Params, "insights_gained"),
+				RelatedDecisions: getStringSlice(req.Params, "related_decisions"),
+				DurationSecs:     getInt(req.Params, "duration_secs"),
+			}
 
-			nodeID, err := m.memoryHandler.MemoryAddExperience(content, outcome, success)
+			// Use extended method if any extended fields are present
+			var nodeID string
+			var err error
+			if params.HasExtendedFields() {
+				nodeID, err = m.memoryHandler.MemoryAddExperienceWithOptions(params)
+			} else {
+				nodeID, err = m.memoryHandler.MemoryAddExperience(params.Content, params.Outcome, params.Success)
+			}
 			if err != nil {
 				resp.Error = err.Error()
 			} else {
@@ -717,4 +735,40 @@ func (m *Manager) call(ctx context.Context, method string, params any) (*Respons
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout after %v", timeout)
 	}
+}
+
+// Helper functions for parsing callback params
+
+func getString(params map[string]any, key string) string {
+	if v, ok := params[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func getBool(params map[string]any, key string) bool {
+	if v, ok := params[key].(bool); ok {
+		return v
+	}
+	return false
+}
+
+func getInt(params map[string]any, key string) int {
+	if v, ok := params[key].(float64); ok {
+		return int(v)
+	}
+	return 0
+}
+
+func getStringSlice(params map[string]any, key string) []string {
+	if v, ok := params[key].([]any); ok {
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+	return nil
 }

@@ -205,6 +205,10 @@ type MemoryCallbackHandler interface {
 	// MemoryAddExperience adds an experience to memory.
 	MemoryAddExperience(content, outcome string, success bool) (string, error)
 
+	// MemoryAddExperienceWithOptions adds an experience with extended metadata.
+	// [SPEC-09.02] Supports rich context for better memory retrieval.
+	MemoryAddExperienceWithOptions(params MemoryAddExperienceParams) (string, error)
+
 	// MemoryGetContext retrieves recent context nodes.
 	MemoryGetContext(limit int) ([]MemoryNode, error)
 
@@ -234,10 +238,28 @@ type MemoryAddFactParams struct {
 }
 
 // MemoryAddExperienceParams contains parameters for memory_add_experience callback.
+// Includes optional extended fields for richer context [SPEC-09.02].
 type MemoryAddExperienceParams struct {
 	Content string `json:"content"`
 	Outcome string `json:"outcome"`
 	Success bool   `json:"success"`
+
+	// Extended fields (optional, for richer context)
+	TaskDescription  string   `json:"task_description,omitempty"`
+	Approach         string   `json:"approach,omitempty"`
+	FilesModified    []string `json:"files_modified,omitempty"`
+	BlockersHit      []string `json:"blockers_hit,omitempty"`
+	InsightsGained   []string `json:"insights_gained,omitempty"`
+	RelatedDecisions []string `json:"related_decisions,omitempty"`
+	DurationSecs     int      `json:"duration_secs,omitempty"`
+}
+
+// HasExtendedFields returns true if any extended fields are populated.
+func (p *MemoryAddExperienceParams) HasExtendedFields() bool {
+	return p.TaskDescription != "" || p.Approach != "" ||
+		len(p.FilesModified) > 0 || len(p.BlockersHit) > 0 ||
+		len(p.InsightsGained) > 0 || len(p.RelatedDecisions) > 0 ||
+		p.DurationSecs > 0
 }
 
 // MemoryRelateParams contains parameters for memory_relate callback.

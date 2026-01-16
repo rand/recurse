@@ -2,6 +2,7 @@ package rlm
 
 import (
 	"context"
+	"time"
 
 	"github.com/rand/recurse/internal/memory/hypergraph"
 	"github.com/rand/recurse/internal/memory/tiers"
@@ -112,6 +113,35 @@ func (h *MemoryCallbackHandler) MemoryAddExperience(content, outcome string, suc
 	}
 
 	node, err := h.taskMem.AddExperience(h.ctx, content, outcome, success)
+	if err != nil {
+		return "", err
+	}
+	return node.ID, nil
+}
+
+// MemoryAddExperienceWithOptions adds an experience with extended metadata.
+// [SPEC-09.02] Supports rich context for better memory retrieval.
+func (h *MemoryCallbackHandler) MemoryAddExperienceWithOptions(params repl.MemoryAddExperienceParams) (string, error) {
+	if h.taskMem == nil {
+		return "", nil
+	}
+
+	var opts *tiers.ExperienceOptions
+	if params.HasExtendedFields() {
+		opts = &tiers.ExperienceOptions{
+			TaskDescription:  params.TaskDescription,
+			Approach:         params.Approach,
+			FilesModified:    params.FilesModified,
+			BlockersHit:      params.BlockersHit,
+			InsightsGained:   params.InsightsGained,
+			RelatedDecisions: params.RelatedDecisions,
+		}
+		if params.DurationSecs > 0 {
+			opts.Duration = time.Duration(params.DurationSecs) * time.Second
+		}
+	}
+
+	node, err := h.taskMem.AddExperienceWithOptions(h.ctx, params.Content, params.Outcome, params.Success, opts)
 	if err != nil {
 		return "", err
 	}
