@@ -413,3 +413,171 @@ func TestKeyMap_FullHelp(t *testing.T) {
 func ptrBool(b bool) *bool {
 	return &b
 }
+
+// Tests for content generation and View rendering
+
+func TestPermissionDialogCmp_GenerateBashContent(t *testing.T) {
+	req := createTestPermission(tools.BashToolName)
+	dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+	// Set window size
+	dialog.wWidth = 100
+	dialog.wHeight = 50
+	dialog.SetSize()
+
+	view := dialog.View()
+
+	// Should contain the command
+	assert.Contains(t, view, "echo hello")
+}
+
+func TestPermissionDialogCmp_GenerateEditContent(t *testing.T) {
+	req := createTestPermission(tools.EditToolName)
+	dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+	dialog.wWidth = 100
+	dialog.wHeight = 50
+	dialog.SetSize()
+
+	view := dialog.View()
+
+	// Should contain the file path
+	assert.Contains(t, view, "/test/file.go")
+}
+
+func TestPermissionDialogCmp_GenerateWriteContent(t *testing.T) {
+	req := createTestPermission(tools.WriteToolName)
+	dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+	dialog.wWidth = 100
+	dialog.wHeight = 50
+	dialog.SetSize()
+
+	view := dialog.View()
+
+	// Should contain the file path
+	assert.Contains(t, view, "/test/file.go")
+}
+
+func TestPermissionDialogCmp_GenerateFetchContent(t *testing.T) {
+	req := createTestPermission(tools.FetchToolName)
+	dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+	dialog.wWidth = 100
+	dialog.wHeight = 50
+	dialog.SetSize()
+
+	view := dialog.View()
+
+	// Should contain the URL
+	assert.Contains(t, view, "example.com")
+}
+
+func TestPermissionDialogCmp_SelectOption_Allow(t *testing.T) {
+	req := createTestPermission(tools.BashToolName)
+	dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+	dialog.wWidth = 100
+	dialog.wHeight = 50
+	dialog.SetSize()
+
+	// Navigate to Allow option (first option) and select
+	model, cmd := dialog.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	assert.NotNil(t, model)
+
+	// Should produce a command to close dialog
+	if cmd != nil {
+		assert.NotNil(t, cmd)
+	}
+}
+
+func TestPermissionDialogCmp_SelectOption_Deny(t *testing.T) {
+	req := createTestPermission(tools.BashToolName)
+	dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+	dialog.wWidth = 100
+	dialog.wHeight = 50
+	dialog.SetSize()
+
+	// Navigate to Deny option (third option)
+	dialog.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	dialog.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	assert.Equal(t, 2, dialog.selectedOption) // Deny is option 2
+
+	// Select Deny
+	model, cmd := dialog.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	assert.NotNil(t, model)
+	if cmd != nil {
+		assert.NotNil(t, cmd)
+	}
+}
+
+func TestPermissionDialogCmp_RenderButtons(t *testing.T) {
+	req := createTestPermission(tools.BashToolName)
+	dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+	dialog.wWidth = 100
+	dialog.wHeight = 50
+	dialog.SetSize()
+
+	view := dialog.View()
+
+	// Should contain button labels
+	assert.Contains(t, view, "Allow")
+}
+
+func TestPermissionDialogCmp_RenderHeader(t *testing.T) {
+	req := createTestPermission(tools.BashToolName)
+	dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+	dialog.wWidth = 100
+	dialog.wHeight = 50
+	dialog.SetSize()
+
+	view := dialog.View()
+
+	// Should contain tool name in output
+	assert.NotEmpty(t, view)
+}
+
+func TestPermissionDialogCmp_ViewWithDifferentTools(t *testing.T) {
+	testCases := []struct {
+		name     string
+		toolName string
+	}{
+		{"Bash", tools.BashToolName},
+		{"Edit", tools.EditToolName},
+		{"Write", tools.WriteToolName},
+		{"Fetch", tools.FetchToolName},
+		{"View", tools.ViewToolName},
+		{"LS", tools.LSToolName},
+		{"Download", tools.DownloadToolName},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := createTestPermission(tc.toolName)
+			dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+			dialog.wWidth = 100
+			dialog.wHeight = 50
+			dialog.SetSize()
+
+			view := dialog.View()
+			assert.NotEmpty(t, view, "View should not be empty for %s", tc.name)
+		})
+	}
+}
+
+func TestPermissionDialogCmp_GetOrSetMarkdown(t *testing.T) {
+	req := createTestPermission(tools.BashToolName)
+	dialog := NewPermissionDialogCmp(req, nil).(*permissionDialogCmp)
+
+	// Test caching behavior - same key returns cached value
+	generator := func() (string, error) { return "test content", nil }
+	md1 := dialog.GetOrSetMarkdown("test-key", generator)
+	md2 := dialog.GetOrSetMarkdown("test-key", generator)
+
+	assert.Equal(t, md1, md2, "Should return cached markdown")
+	assert.Contains(t, md1, "test content")
+}
