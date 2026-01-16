@@ -132,21 +132,44 @@ func New(ctx context.Context, conn *sql.DB, cfg *config.Config) (*App, error) {
 	})
 	if err != nil {
 		slog.Warn("Failed to create REPL manager", "error", err)
-	} else {
-		app.REPLManager = replMgr
-		app.REPLHistory = NewREPLHistoryAdapter(replMgr, 100)
-		slog.Info("REPL manager created", "workdir", cfg.WorkingDir())
-		// Start REPL in background
+		// Notify TUI of REPL unavailability
 		go func() {
-			if err := replMgr.Start(ctx); err != nil {
-				slog.Warn("Failed to start REPL", "error", err)
-			} else {
-				slog.Info("Python REPL started successfully")
+			app.events <- pubsub.REPLStatusMsg{
+				Running: false,
+				Error:   fmt.Sprintf("Failed to create REPL: %v", err),
 			}
 		}()
-		app.cleanupFuncs = append(app.cleanupFuncs, func() error {
-			return replMgr.Stop()
-		})
+	} else {
+		app.REPLHistory = NewREPLHistoryAdapter(replMgr, 100)
+		slog.Info("REPL manager created", "workdir", cfg.WorkingDir())
+
+		// Start REPL synchronously with timeout to avoid race conditions
+		// The coordinator needs REPL to be ready before registering tools
+		startCtx, startCancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := replMgr.Start(startCtx); err != nil {
+			startCancel()
+			slog.Error("REPL failed to start", "error", err)
+			// Notify TUI of startup failure
+			go func() {
+				app.events <- pubsub.REPLStatusMsg{
+					Running: false,
+					Error:   fmt.Sprintf("REPL startup failed: %v", err),
+				}
+			}()
+			// Don't set REPLManager so tools know it's unavailable
+			app.REPLManager = nil
+		} else {
+			startCancel()
+			slog.Info("Python REPL started successfully")
+			app.REPLManager = replMgr
+			// Notify TUI of successful startup
+			go func() {
+				app.events <- pubsub.REPLStatusMsg{Running: true}
+			}()
+			app.cleanupFuncs = append(app.cleanupFuncs, func() error {
+				return replMgr.Stop()
+			})
+		}
 	}
 
 	// Initialize RLM service before coordinator (optional - non-fatal if it fails)

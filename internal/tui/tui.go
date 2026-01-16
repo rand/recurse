@@ -447,6 +447,21 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		a.status = s.(status.StatusCmp)
 		return a, statusCmd
+
+	// REPL Status
+	case pubsub.REPLStatusMsg:
+		if msg.Error != "" {
+			// Show REPL error notification in status bar
+			s, statusCmd := a.status.Update(util.InfoMsg{
+				Type: util.InfoTypeError,
+				Msg:  msg.Error,
+				TTL:  15 * time.Second,
+			})
+			a.status = s.(status.StatusCmp)
+			return a, statusCmd
+		}
+		// REPL started successfully - no notification needed
+		return a, nil
 	}
 	s, _ := a.status.Update(msg)
 	a.status = s.(status.StatusCmp)

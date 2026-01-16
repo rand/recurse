@@ -43,8 +43,9 @@ func NewRLMExecuteTool(replManager *repl.Manager, tracer RLMTraceRecorder) fanta
 				return fantasy.NewTextErrorResponse("code is required"), nil
 			}
 
-			if !replManager.Running() {
-				return fantasy.NewTextErrorResponse("REPL is not running"), nil
+			// Ensure REPL is running, attempt to start if not
+			if err := ensureREPLRunning(ctx, replManager); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
 			startTime := time.Now()

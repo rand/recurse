@@ -36,8 +36,9 @@ func NewRLMExternalizeTool(replManager *repl.Manager) fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse("content is required"), nil
 			}
 
-			if !replManager.Running() {
-				return fantasy.NewTextErrorResponse("REPL is not running"), nil
+			// Ensure REPL is running, attempt to start if not
+			if err := ensureREPLRunning(ctx, replManager); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
 			if err := replManager.SetVar(ctx, params.Name, params.Content); err != nil {

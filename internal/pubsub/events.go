@@ -33,3 +33,9 @@ type UpdateAvailableMsg struct {
 	LatestVersion  string
 	IsDevelopment  bool
 }
+
+// REPLStatusMsg is sent when the REPL status changes.
+type REPLStatusMsg struct {
+	Running bool
+	Error   string // Non-empty if startup failed
+}
