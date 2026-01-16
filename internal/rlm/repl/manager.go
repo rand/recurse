@@ -163,7 +163,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	// Build command with sandbox environment
-	cmd := exec.CommandContext(ctx, m.pythonPath, "-u", m.bootstrapPath)
+	// NOTE: We use exec.Command (not CommandContext) because the REPL process
+	// should outlive the startup context. CommandContext would kill the process
+	// when the context is cancelled, which happens immediately after startup.
+	cmd := exec.Command(m.pythonPath, "-u", m.bootstrapPath)
 	cmd.Dir = m.workDir
 	cmd.Env = append(os.Environ(), m.sandbox.ToEnv()...)
 
