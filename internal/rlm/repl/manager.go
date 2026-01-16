@@ -27,6 +27,9 @@ type Manager struct {
 	running  atomic.Bool
 	startedAt time.Time
 
+	// exitErr stores the error from process exit, if any.
+	exitErr error
+
 	// pythonPath is the path to the Python interpreter.
 	pythonPath string
 
@@ -211,7 +214,35 @@ func (m *Manager) Start(ctx context.Context) error {
 		slog.Debug("failed to capture baseline resource usage", "error", err)
 	}
 
+	// Start process monitor goroutine to detect unexpected exits
+	go m.monitorProcess()
+
 	return nil
+}
+
+// monitorProcess watches for process exit and updates the running state.
+func (m *Manager) monitorProcess() {
+	if m.cmd == nil || m.cmd.Process == nil {
+		return
+	}
+
+	// Wait for the process to exit
+	err := m.cmd.Wait()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Only update if we're still considered "running" (not a graceful stop)
+	if m.running.Load() {
+		m.running.Store(false)
+		if err != nil {
+			m.exitErr = fmt.Errorf("REPL process exited unexpectedly: %w", err)
+			slog.Warn("REPL process exited unexpectedly", "error", err)
+		} else {
+			m.exitErr = fmt.Errorf("REPL process exited unexpectedly with status 0")
+			slog.Warn("REPL process exited unexpectedly with status 0")
+		}
+	}
 }
 
 // waitReady waits for the REPL to signal it's ready.
@@ -269,16 +300,29 @@ func (m *Manager) stopLocked() error {
 		m.stdin.Close()
 	}
 
-	// Wait for process to exit with timeout
-	done := make(chan error, 1)
-	go func() {
-		done <- m.cmd.Wait()
-	}()
+	// The monitorProcess goroutine is already waiting on the process.
+	// Give it time to exit gracefully, then force kill if needed.
+	if m.cmd != nil && m.cmd.Process != nil {
+		// Wait for graceful shutdown with timeout
+		gracefulDone := make(chan struct{})
+		go func() {
+			// Poll until process exits or timeout
+			for i := 0; i < 50; i++ { // 5 seconds total
+				time.Sleep(100 * time.Millisecond)
+				if m.cmd.ProcessState != nil {
+					close(gracefulDone)
+					return
+				}
+			}
+		}()
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		m.cmd.Process.Kill()
+		select {
+		case <-gracefulDone:
+			// Process exited gracefully
+		case <-time.After(5 * time.Second):
+			// Force kill
+			m.cmd.Process.Kill()
+		}
 	}
 
 	return nil
@@ -287,6 +331,13 @@ func (m *Manager) stopLocked() error {
 // Running returns true if the REPL is running.
 func (m *Manager) Running() bool {
 	return m.running.Load()
+}
+
+// ExitError returns the error from an unexpected process exit, if any.
+func (m *Manager) ExitError() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.exitErr
 }
 
 // SetCallbackHandler sets the handler for LLM callbacks from Python.

@@ -35,8 +35,13 @@ func NewRLMStatusTool(replManager *repl.Manager) fantasy.AgentTool {
 			}
 
 			if !result.Running {
+				msg := "REPL is not running"
+				// Check if there was an unexpected exit
+				if exitErr := replManager.ExitError(); exitErr != nil {
+					msg = fmt.Sprintf("REPL is not running: %v", exitErr)
+				}
 				return fantasy.WithResponseMetadata(
-					fantasy.NewTextResponse("REPL is not running"),
+					fantasy.NewTextResponse(msg),
 					result,
 				), nil
 			}
@@ -44,6 +49,14 @@ func NewRLMStatusTool(replManager *repl.Manager) fantasy.AgentTool {
 			// Get status from REPL
 			status, err := replManager.Status(ctx)
 			if err != nil {
+				// Check if process died between Running() check and Status() call
+				if exitErr := replManager.ExitError(); exitErr != nil {
+					result.Running = false
+					return fantasy.WithResponseMetadata(
+						fantasy.NewTextResponse(fmt.Sprintf("REPL process exited: %v", exitErr)),
+						result,
+					), nil
+				}
 				return fantasy.ToolResponse{}, fmt.Errorf("get status: %w", err)
 			}
 
