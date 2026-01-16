@@ -590,6 +590,12 @@ func (s *Service) LifecycleManager() *evolution.LifecycleManager {
 	return s.lifecycle
 }
 
+// MetaEvolutionManager returns the meta-evolution manager for direct access.
+// This enables the TUI to access schema evolution proposals.
+func (s *Service) MetaEvolutionManager() *evolution.MetaEvolutionManager {
+	return s.metaEvolution
+}
+
 // Controller returns the RLM controller for direct access.
 func (s *Service) Controller() *Controller {
 	return s.controller

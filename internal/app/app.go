@@ -62,6 +62,9 @@ type App struct {
 	// MemoryStore provides access to hypergraph memory for the TUI.
 	MemoryStore *MemoryStoreAdapter
 
+	// ProposalProvider provides access to meta-evolution proposals for the TUI.
+	ProposalProvider *ProposalProviderAdapter
+
 	LSPClients *csync.Map[string, *lsp.Client]
 
 	config *config.Config

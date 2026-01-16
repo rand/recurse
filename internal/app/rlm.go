@@ -52,6 +52,11 @@ func (app *App) InitRLM(ctx context.Context) error {
 		app.MemoryStore = NewMemoryStoreAdapter(store)
 	}
 
+	// Create proposal provider adapter for TUI meta-evolution proposals
+	if metaEvo := svc.MetaEvolutionManager(); metaEvo != nil {
+		app.ProposalProvider = NewProposalProviderAdapter(metaEvo)
+	}
+
 	// Add cleanup
 	app.cleanupFuncs = append(app.cleanupFuncs, func() error {
 		if app.RLM != nil {

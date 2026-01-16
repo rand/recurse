@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 
+	"github.com/rand/recurse/internal/memory/evolution"
 	"github.com/rand/recurse/internal/memory/hypergraph"
 	"github.com/rand/recurse/internal/tui/components/dialogs/memory"
 )
@@ -70,4 +71,56 @@ func (a *MemoryStoreAdapter) GetStats() (memory.MemoryStats, error) {
 		ByType:     byType,
 		ByTier:     byTier,
 	}, nil
+}
+
+// ProposalProviderAdapter adapts the MetaEvolutionManager to the memory.ProposalProvider interface.
+// This surfaces meta-evolution proposals to the TUI for user review.
+type ProposalProviderAdapter struct {
+	manager *evolution.MetaEvolutionManager
+}
+
+// NewProposalProviderAdapter creates a new adapter for meta-evolution proposals.
+func NewProposalProviderAdapter(manager *evolution.MetaEvolutionManager) *ProposalProviderAdapter {
+	if manager == nil {
+		return nil
+	}
+	return &ProposalProviderAdapter{manager: manager}
+}
+
+// GetPendingProposals returns pending schema evolution proposals.
+func (a *ProposalProviderAdapter) GetPendingProposals(ctx context.Context) ([]*evolution.Proposal, error) {
+	return a.manager.GetPendingProposals(ctx)
+}
+
+// ApproveProposal approves a proposal for application.
+func (a *ProposalProviderAdapter) ApproveProposal(ctx context.Context, id string) error {
+	decision := evolution.ProposalDecision{
+		ProposalID: id,
+		Action:     evolution.ActionApprove,
+		Reason:     "approved via TUI",
+		DecidedBy:  "user",
+	}
+	return a.manager.HandleDecision(ctx, decision)
+}
+
+// RejectProposal rejects a proposal.
+func (a *ProposalProviderAdapter) RejectProposal(ctx context.Context, id, reason string) error {
+	decision := evolution.ProposalDecision{
+		ProposalID: id,
+		Action:     evolution.ActionReject,
+		Reason:     reason,
+		DecidedBy:  "user",
+	}
+	return a.manager.HandleDecision(ctx, decision)
+}
+
+// DeferProposal defers a proposal for later review.
+func (a *ProposalProviderAdapter) DeferProposal(ctx context.Context, id string) error {
+	decision := evolution.ProposalDecision{
+		ProposalID: id,
+		Action:     evolution.ActionDefer,
+		Reason:     "deferred via TUI",
+		DecidedBy:  "user",
+	}
+	return a.manager.HandleDecision(ctx, decision)
 }

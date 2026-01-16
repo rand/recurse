@@ -330,7 +330,7 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, util.ReportWarn("Memory store not available")
 		}
 		return a, util.CmdHandler(dialogs.OpenDialogMsg{
-			Model: memory.NewMemoryDialog(a.app.MemoryStore),
+			Model: memory.NewMemoryDialog(a.app.MemoryStore, a.app.ProposalProvider),
 		})
 	// REPL Output
 	case commands.OpenREPLOutputDialogMsg:
@@ -633,7 +633,7 @@ func (a *appModel) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			return util.ReportWarn("Memory store not available")
 		}
 		return util.CmdHandler(dialogs.OpenDialogMsg{
-			Model: memory.NewMemoryDialog(a.app.MemoryStore),
+			Model: memory.NewMemoryDialog(a.app.MemoryStore, a.app.ProposalProvider),
 		})
 	case key.Matches(msg, a.keyMap.REPLOutput):
 		if a.dialog.ActiveDialogID() == reploutput.REPLOutputDialogID {
@@ -818,7 +818,7 @@ func (a *appModel) createPanelView() panelview.PanelViewDialog {
 			ID:       panels.PanelID(memory.MemoryDialogID),
 			Title:    "Memory",
 			Shortcut: "Ctrl+B",
-			Content:  memory.NewMemoryDialog(a.app.MemoryStore),
+			Content:  memory.NewMemoryDialog(a.app.MemoryStore, a.app.ProposalProvider),
 		})
 	}
 
