@@ -26,6 +26,10 @@ const (
 
 	// ActionSynthesize combines existing partial results.
 	ActionSynthesize Action = "SYNTHESIZE"
+
+	// ActionExecute runs code in the Python REPL.
+	// [SPEC-09.05] For computational tasks, data transformation, verification.
+	ActionExecute Action = "EXECUTE"
 )
 
 // DecomposeStrategy specifies how to break down a task.
@@ -57,6 +61,9 @@ type DecisionParams struct {
 	// For SUBCALL
 	Prompt  string `json:"prompt,omitempty"`
 	Snippet string `json:"snippet,omitempty"`
+
+	// For EXECUTE [SPEC-09.05]
+	Code string `json:"code,omitempty"`
 
 	// For budget allocation
 	TokenBudget int `json:"token_budget,omitempty"`
@@ -191,6 +198,7 @@ func (c *Controller) buildPrompt(state State) string {
 	sb.WriteString("3. MEMORY_QUERY - Retrieve from hypergraph memory\n")
 	sb.WriteString("4. SUBCALL - Invoke sub-LM on specific snippet\n")
 	sb.WriteString("5. SYNTHESIZE - Combine existing partial results\n")
+	sb.WriteString("6. EXECUTE - Run Python code in REPL (for computation, data processing, verification)\n")
 	sb.WriteString("\n")
 	sb.WriteString(`Output JSON: {"action": "...", "params": {...}, "reasoning": "..."}`)
 
@@ -219,7 +227,7 @@ func parseDecision(response string) (*Decision, error) {
 
 	// Validate action
 	switch decision.Action {
-	case ActionDirect, ActionDecompose, ActionMemoryQuery, ActionSubcall, ActionSynthesize:
+	case ActionDirect, ActionDecompose, ActionMemoryQuery, ActionSubcall, ActionSynthesize, ActionExecute:
 		// Valid
 	default:
 		return nil, fmt.Errorf("unknown action: %s", decision.Action)
@@ -242,9 +250,14 @@ Guidelines:
 - Use MEMORY_QUERY when you need to recall previously learned facts or context
 - Use SUBCALL when you need to process a specific snippet with a focused prompt
 - Use SYNTHESIZE when you have partial results that need to be combined
+- Use EXECUTE when the task requires computation, data transformation, or verification
+  - Include Python code in params.code
+  - Good for: math calculations, JSON/CSV processing, testing code, data analysis
+  - Example: {"action": "EXECUTE", "params": {"code": "print(sum([1,2,3]))"}, "reasoning": "..."}
 
 Consider:
 - Budget constraints: don't decompose if budget is low
 - Recursion depth: prefer simpler strategies as depth increases
 - Context size: decompose large contexts to avoid overwhelming the model
-- Task complexity: match strategy to task requirements`
+- Task complexity: match strategy to task requirements
+- Computational tasks: use EXECUTE for numerical or data processing tasks`

@@ -13,6 +13,7 @@ import (
 	"github.com/rand/recurse/internal/rlm/async"
 	"github.com/rand/recurse/internal/rlm/decompose"
 	"github.com/rand/recurse/internal/rlm/meta"
+	"github.com/rand/recurse/internal/rlm/repl"
 	"github.com/rand/recurse/internal/rlm/synthesize"
 )
 
@@ -26,6 +27,7 @@ type Core struct {
 	config        CoreConfig
 	recovery      *RecoveryManager
 	asyncExecutor *async.Executor
+	replManager   *repl.Manager // [SPEC-09.05] For EXECUTE action
 }
 
 // CoreConfig configures the orchestration core.
@@ -110,6 +112,12 @@ func (c *Core) SetTracer(tracer TraceRecorder) {
 // Tracer returns the trace recorder.
 func (c *Core) Tracer() TraceRecorder {
 	return c.tracer
+}
+
+// SetREPLManager sets the REPL manager for EXECUTE action.
+// [SPEC-09.05]
+func (c *Core) SetREPLManager(mgr *repl.Manager) {
+	c.replManager = mgr
 }
 
 // Execute runs the RLM orchestration loop for a task.
@@ -311,6 +319,9 @@ func (c *Core) executeAction(ctx context.Context, state meta.State, decision *me
 
 	case meta.ActionSynthesize:
 		return c.executeSynthesize(ctx, state)
+
+	case meta.ActionExecute:
+		return c.executeREPL(ctx, state, decision)
 
 	default:
 		return "", 0, fmt.Errorf("unknown action: %s", decision.Action)
@@ -583,6 +594,84 @@ func (c *Core) executeSynthesize(ctx context.Context, state meta.State) (string,
 	}
 
 	return synthesized.Response, synthesized.TotalTokensUsed, nil
+}
+
+// executeREPL executes Python code in the REPL.
+// [SPEC-09.05] For computational tasks, data transformation, verification.
+func (c *Core) executeREPL(ctx context.Context, state meta.State, decision *meta.Decision) (string, int, error) {
+	code := decision.Params.Code
+	if code == "" {
+		// Fallback to DIRECT if no code provided
+		slog.Warn("EXECUTE action with no code, falling back to DIRECT")
+		return c.executeDirect(ctx, state)
+	}
+
+	// Check if REPL is available
+	if c.replManager == nil || !c.replManager.Running() {
+		// Try to start REPL if manager exists but not running
+		if c.replManager != nil {
+			startCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := c.replManager.Start(startCtx); err != nil {
+				slog.Warn("REPL not available, falling back to DIRECT", "error", err)
+				return c.executeDirect(ctx, state)
+			}
+		} else {
+			// No REPL manager at all, fallback to DIRECT
+			slog.Warn("REPL manager not configured, falling back to DIRECT")
+			return c.executeDirect(ctx, state)
+		}
+	}
+
+	// Execute code in REPL
+	result, err := c.replManager.Execute(ctx, code)
+	if err != nil {
+		return "", 0, fmt.Errorf("REPL execution: %w", err)
+	}
+
+	// Build response
+	var response strings.Builder
+	response.WriteString("Execution result:\n")
+	response.WriteString(result.Output)
+	if result.Error != "" {
+		response.WriteString("\nError: ")
+		response.WriteString(result.Error)
+	}
+
+	// Store execution as experience for learning
+	if c.config.StoreDecisions {
+		c.storeREPLExecution(ctx, code, result)
+	}
+
+	tokens := estimateTokens(code) + estimateTokens(result.Output)
+	return response.String(), tokens, nil
+}
+
+// storeREPLExecution saves a REPL execution as an experience node.
+func (c *Core) storeREPLExecution(ctx context.Context, code string, result *repl.ExecuteResult) {
+	node := hypergraph.NewNode(hypergraph.NodeTypeExperience, truncate(code, 200))
+	node.Subtype = "repl_execution"
+
+	metadata := map[string]any{
+		"code":    truncate(code, 500),
+		"output":  truncate(result.Output, 500),
+		"success": result.Error == "",
+	}
+	if result.Error != "" {
+		metadata["error"] = truncate(result.Error, 200)
+	}
+	metadataJSON, _ := json.Marshal(metadata)
+	node.Metadata = metadataJSON
+
+	if result.Error == "" {
+		node.Confidence = 1.0
+	} else {
+		node.Confidence = 0.3
+	}
+
+	if err := c.store.CreateNode(ctx, node); err != nil {
+		slog.Warn("Failed to store REPL execution", "error", err)
+	}
 }
 
 // queryMemoryContext retrieves relevant context from memory.
