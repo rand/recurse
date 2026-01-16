@@ -28,6 +28,9 @@ type Core struct {
 	recovery      *RecoveryManager
 	asyncExecutor *async.Executor
 	replManager   *repl.Manager // [SPEC-09.05] For EXECUTE action
+
+	// Context externalization [SPEC-09.06]
+	contextPreparer ContextPreparer
 }
 
 // CoreConfig configures the orchestration core.
@@ -120,6 +123,36 @@ func (c *Core) SetREPLManager(mgr *repl.Manager) {
 	c.replManager = mgr
 }
 
+// ContextPreparer is an interface for preparing context with optional externalization.
+// [SPEC-09.06] This allows the wrapper to decide execution mode.
+type ContextPreparer interface {
+	// PrepareContext prepares context, potentially externalizing it to REPL.
+	// Returns the prepared result with mode, system prompt, and loaded context info.
+	PrepareContext(ctx context.Context, task string, contextTokens int) (*PreparedContext, error)
+}
+
+// PreparedContext contains the result of context preparation.
+// [SPEC-09.06]
+type PreparedContext struct {
+	// Mode indicates which execution mode was selected.
+	Mode string // "direct" or "rlm"
+
+	// SystemPrompt is set when in RLM mode.
+	SystemPrompt string
+
+	// Externalized indicates context was loaded into REPL variables.
+	Externalized bool
+
+	// ExternalizedTokens is the token count that was externalized.
+	ExternalizedTokens int
+}
+
+// SetContextPreparer sets the context preparer for externalization.
+// [SPEC-09.06]
+func (c *Core) SetContextPreparer(preparer ContextPreparer) {
+	c.contextPreparer = preparer
+}
+
 // Execute runs the RLM orchestration loop for a task.
 func (c *Core) Execute(ctx context.Context, task string) (*ExecutionResult, error) {
 	start := time.Now()
@@ -170,6 +203,20 @@ func (c *Core) orchestrate(ctx context.Context, state meta.State, parentID strin
 
 	// Reset retry counter for this orchestration
 	c.recovery.ResetRetry()
+
+	// [SPEC-09.06] Check for context externalization at depth 0
+	if c.contextPreparer != nil && state.RecursionDepth == 0 {
+		prepared, err := c.contextPreparer.PrepareContext(ctx, state.Task, state.ContextTokens)
+		if err != nil {
+			slog.Warn("Context preparation failed, continuing without externalization", "error", err)
+		} else if prepared != nil && prepared.Externalized {
+			state.ExternalizedContext = true
+			state.SystemPrompt = prepared.SystemPrompt
+			slog.Info("Context externalized to REPL",
+				"mode", prepared.Mode,
+				"externalized_tokens", prepared.ExternalizedTokens)
+		}
+	}
 
 	// Record trace event start
 	if c.tracer != nil && c.config.TraceEnabled {
@@ -332,6 +379,14 @@ func (c *Core) executeAction(ctx context.Context, state meta.State, decision *me
 func (c *Core) executeDirect(ctx context.Context, state meta.State) (string, int, error) {
 	// Build prompt with any available memory hints
 	var prompt strings.Builder
+
+	// [SPEC-09.06] Include system prompt if context was externalized
+	if state.SystemPrompt != "" {
+		prompt.WriteString("<system>\n")
+		prompt.WriteString(state.SystemPrompt)
+		prompt.WriteString("\n</system>\n\n")
+	}
+
 	prompt.WriteString(state.Task)
 
 	if len(state.MemoryHints) > 0 {
@@ -343,12 +398,21 @@ func (c *Core) executeDirect(ctx context.Context, state meta.State) (string, int
 		}
 	}
 
+	// [SPEC-09.06] Note externalized context availability
+	if state.ExternalizedContext {
+		prompt.WriteString("\n\nNote: Large context has been externalized to REPL variables. ")
+		prompt.WriteString("Use EXECUTE action with Python code to access and process it.\n")
+	}
+
 	// Estimate output tokens - allow generous output for detailed responses
 	inputTokens := estimateTokens(prompt.String())
 	maxOutputTokens := min(inputTokens*3, 16384) // Allow up to 16K output tokens
 
 	// Call the main LLM to generate a response
-	slog.Debug("executeDirect calling LLM", "inputTokens", inputTokens, "maxOutputTokens", maxOutputTokens)
+	slog.Debug("executeDirect calling LLM",
+		"inputTokens", inputTokens,
+		"maxOutputTokens", maxOutputTokens,
+		"externalized", state.ExternalizedContext)
 	response, err := c.mainClient.Complete(ctx, prompt.String(), maxOutputTokens)
 	if err != nil {
 		return "", inputTokens, fmt.Errorf("main LLM call: %w", err)

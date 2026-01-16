@@ -78,6 +78,14 @@ type State struct {
 	MaxDepth       int      `json:"max_depth"`
 	MemoryHints    []string `json:"memory_hints,omitempty"`
 	PartialResults []string `json:"partial_results,omitempty"`
+
+	// ExternalizedContext indicates context has been loaded into REPL variables.
+	// [SPEC-09.06] When true, meta-controller can leverage externalized context.
+	ExternalizedContext bool `json:"externalized_context,omitempty"`
+
+	// SystemPrompt is set when context externalization provides a custom prompt.
+	// [SPEC-09.06] Used by executeDirect when in RLM mode.
+	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
 // LLMClient interface for making LLM calls.
@@ -189,6 +197,12 @@ func (c *Controller) buildPrompt(state State) string {
 
 	if len(state.PartialResults) > 0 {
 		sb.WriteString(fmt.Sprintf("- Partial results available: %d\n", len(state.PartialResults)))
+	}
+
+	// [SPEC-09.06] Inform meta-controller about externalized context
+	if state.ExternalizedContext {
+		sb.WriteString("- Context externalized: YES (loaded into REPL variables)\n")
+		sb.WriteString("  → EXECUTE action can access the full context via Python code\n")
 	}
 
 	sb.WriteString("\n")
