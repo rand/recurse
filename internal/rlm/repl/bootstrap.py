@@ -35,15 +35,13 @@ from typing import Any
 def _init_resource_limits():
     """Initialize resource limits from environment variables."""
     # Memory limit (address space)
-    mem_limit_mb = os.environ.get("RECURSE_MEMORY_LIMIT_MB")
-    if mem_limit_mb:
-        try:
-            limit_bytes = int(mem_limit_mb) * 1024 * 1024
-            # Set both soft and hard limits
-            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
-        except (ValueError, resource.error) as e:
-            # Log but don't fail - some systems may not support this
-            sys.stderr.write(f"Warning: Could not set memory limit: {e}\n")
+    # NOTE: We intentionally do NOT set RLIMIT_AS because it limits virtual
+    # address space, not actual RAM usage. Libraries like numpy/pandas pre-allocate
+    # large virtual memory maps that can easily exceed any reasonable limit.
+    # Instead, we rely on the OS memory management and monitoring from Go.
+    #
+    # The RECURSE_MEMORY_LIMIT_MB environment variable is still passed for
+    # informational purposes but not enforced via rlimit.
 
     # CPU time limit per execution
     cpu_limit_sec = os.environ.get("RECURSE_CPU_LIMIT_SEC")
