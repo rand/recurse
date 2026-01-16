@@ -1006,6 +1006,229 @@ def enable_memory():
     _memory_enabled = True
 
 
+# =============================================================================
+# Hallucination Detection Functions
+# =============================================================================
+# These functions provide access to the hallucination detection system from Python.
+# They use the plugin callback mechanism to route to Go's HallucinationPlugin.
+# [SPEC-08.31-33]
+
+_hallucination_enabled = True  # Can be disabled for testing
+
+
+def verify_claim(claim: str, evidence: str, confidence: float = 0.9) -> dict:
+    """
+    Verify a single claim against provided evidence.
+
+    Uses information-theoretic hallucination detection to check if a claim
+    is grounded in the evidence. Returns detailed metrics including probability
+    estimates and budget gap analysis.
+
+    [SPEC-08.31] [SPEC-08.32]
+
+    Args:
+        claim: The claim to verify
+        evidence: Evidence to verify the claim against
+        confidence: Stated confidence level (0.0-1.0), defaults to 0.9
+
+    Returns:
+        dict with fields:
+            - claim: The original claim text
+            - status: 'grounded', 'unsupported', 'contradicted', or 'unverifiable'
+            - p0: Pseudo-prior P(claim | WITHOUT evidence)
+            - p1: Posterior P(claim | WITH evidence)
+            - required_bits: Information needed to reach target confidence
+            - observed_bits: Actual information provided by evidence
+            - budget_gap: required_bits - observed_bits (negative = well supported)
+            - adjusted_confidence: Evidence-adjusted confidence
+            - explanation: Human-readable explanation of the result
+
+    Example:
+        >>> result = verify_claim(
+        ...     "The function returns a string",
+        ...     "def foo() -> str: return 'hello'"
+        ... )
+        >>> if result['status'] == 'grounded':
+        ...     print("Claim is supported by evidence")
+    """
+    if not _hallucination_enabled:
+        return {
+            'claim': claim,
+            'status': 'unverifiable',
+            'p0': 0.5,
+            'p1': 0.5,
+            'required_bits': 0.0,
+            'observed_bits': 0.0,
+            'budget_gap': 0.0,
+            'adjusted_confidence': confidence,
+            'explanation': 'Hallucination detection disabled'
+        }
+
+    try:
+        response = _make_callback("plugin_call", {
+            "function": "hallucination_verify_claim",
+            "args": [claim, evidence, confidence]
+        })
+        result = response.get("result", "{}")
+        if isinstance(result, str):
+            return json.loads(result)
+        return result
+    except Exception as e:
+        return {
+            'claim': claim,
+            'status': 'unverifiable',
+            'p0': 0.5,
+            'p1': 0.5,
+            'required_bits': 0.0,
+            'observed_bits': 0.0,
+            'budget_gap': 0.0,
+            'adjusted_confidence': confidence * 0.5,
+            'explanation': f'Verification error: {e}'
+        }
+
+
+def verify_claims(text: str, context: str) -> dict:
+    """
+    Extract and verify all claims in text against context.
+
+    Parses the text to extract assertive claims, then verifies each
+    claim against the provided context. Returns aggregate statistics
+    and per-claim results.
+
+    [SPEC-08.31] [SPEC-08.32]
+
+    Args:
+        text: Text containing claims to verify
+        context: Context to verify claims against
+
+    Returns:
+        dict with fields:
+            - total_claims: Number of claims extracted
+            - verified_claims: Number of claims that are grounded
+            - flagged_claims: Number of claims that are unsupported/contradicted
+            - overall_risk: Ratio of flagged claims (0.0-1.0)
+            - results: List of individual claim verification results
+
+    Example:
+        >>> output = "The API returns JSON. Errors use HTTP 500."
+        >>> context = "API documentation: returns XML, errors use HTTP 400"
+        >>> result = verify_claims(output, context)
+        >>> if result['flagged_claims'] > 0:
+        ...     print(f"Warning: {result['flagged_claims']} claims may be hallucinated")
+    """
+    if not _hallucination_enabled:
+        return {
+            'total_claims': 0,
+            'verified_claims': 0,
+            'flagged_claims': 0,
+            'overall_risk': 0.0,
+            'results': []
+        }
+
+    try:
+        response = _make_callback("plugin_call", {
+            "function": "hallucination_verify_claims",
+            "args": [text, context]
+        })
+        result = response.get("result", "{}")
+        if isinstance(result, str):
+            return json.loads(result)
+        return result
+    except Exception as e:
+        return {
+            'total_claims': 0,
+            'verified_claims': 0,
+            'flagged_claims': 0,
+            'overall_risk': 0.0,
+            'results': [],
+            'error': str(e)
+        }
+
+
+def audit_trace(steps: list[dict], context: str = "", final_answer: str = "") -> dict:
+    """
+    Audit a reasoning trace for procedural hallucinations.
+
+    Verifies that each step in a reasoning trace is entailed by prior
+    steps and context. Detects post-hoc hallucinations where the final
+    answer isn't derivable from the reasoning.
+
+    [SPEC-08.31] [SPEC-08.33]
+
+    Args:
+        steps: List of trace steps, each with:
+            - content (str): The step content (required)
+            - type (str): Step type like 'premise', 'inference' (optional)
+            - confidence (float): Confidence level (optional, default 0.9)
+        context: Initial context for the trace (optional)
+        final_answer: Final answer to check for derivability (optional)
+
+    Returns:
+        dict with fields:
+            - valid: Whether the trace is valid overall
+            - total_steps: Number of steps audited
+            - flagged_steps: List of indices of problematic steps
+            - post_hoc_hallucination: Whether answer isn't derivable from steps
+            - derivability_score: Score for answer derivability (if checked)
+            - overall: Overall assessment ('valid', 'has_issues', 'invalid')
+            - step_results: Per-step verification results
+            - recommendations: List of suggestions for improvement
+
+    Example:
+        >>> steps = [
+        ...     {'content': 'Given x = 5', 'type': 'premise'},
+        ...     {'content': 'y = x + 3 = 8', 'type': 'calculation'},
+        ...     {'content': 'Therefore y = 8', 'type': 'conclusion'}
+        ... ]
+        >>> result = audit_trace(steps, context="Find y where y = x + 3")
+        >>> if not result['valid']:
+        ...     print(f"Issues at steps: {result['flagged_steps']}")
+    """
+    if not _hallucination_enabled:
+        return {
+            'valid': True,
+            'total_steps': len(steps),
+            'flagged_steps': [],
+            'post_hoc_hallucination': False,
+            'overall': 'valid',
+            'step_results': [],
+            'recommendations': []
+        }
+
+    try:
+        response = _make_callback("plugin_call", {
+            "function": "hallucination_audit_trace",
+            "args": [steps, context, final_answer]
+        })
+        result = response.get("result", "{}")
+        if isinstance(result, str):
+            return json.loads(result)
+        return result
+    except Exception as e:
+        return {
+            'valid': True,
+            'total_steps': len(steps),
+            'flagged_steps': [],
+            'post_hoc_hallucination': False,
+            'overall': 'unverifiable',
+            'step_results': [],
+            'recommendations': [],
+            'error': str(e)
+        }
+
+
+def disable_hallucination_detection():
+    """Disable hallucination detection callbacks (for testing)."""
+    global _hallucination_enabled
+    _hallucination_enabled = False
+
+
+def enable_hallucination_detection():
+    """Enable hallucination detection callbacks (default)."""
+    global _hallucination_enabled
+    _hallucination_enabled = True
+
+
 class FinalOutput:
     """Structured final output with metadata."""
 
@@ -1211,6 +1434,12 @@ class REPLNamespace:
             "lint": lint,
             "fmt": fmt,
             "typecheck": typecheck,
+            # Hallucination detection functions [SPEC-08.31-33]
+            "verify_claim": verify_claim,
+            "verify_claims": verify_claims,
+            "audit_trace": audit_trace,
+            "disable_hallucination_detection": disable_hallucination_detection,
+            "enable_hallucination_detection": enable_hallucination_detection,
         }
         if PYDANTIC_AVAILABLE:
             self._globals["pydantic"] = pydantic
@@ -1286,6 +1515,9 @@ class REPLNamespace:
             # Memory functions
             "MemoryNode", "memory_query", "memory_add_fact", "memory_add_experience",
             "memory_get_context", "memory_relate", "disable_memory", "enable_memory",
+            # Hallucination detection functions [SPEC-08.31-33]
+            "verify_claim", "verify_claims", "audit_trace",
+            "disable_hallucination_detection", "enable_hallucination_detection",
         }
 
         for name, value in new_globals.items():

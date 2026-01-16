@@ -198,6 +198,11 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 		}
 	}
 
+	// [SPEC-08.19-22] Verify response before returning to user
+	if result != nil && originalErr == nil {
+		c.verifyResponse(ctx, result, prompt)
+	}
+
 	return result, originalErr
 }
 
@@ -961,4 +966,46 @@ func (c *coordinator) recordRLMAnalysisTrace(analysis *rlm.AnalysisResult) {
 	if err := c.rlmService.Controller().Tracer().RecordEvent(event); err != nil {
 		slog.Debug("Failed to record RLM analysis trace", "error", err)
 	}
+}
+
+// verifyResponse performs hallucination detection on agent responses.
+// [SPEC-08.19-22] Verify responses before returning to user.
+// This is non-blocking - it logs warnings but does not reject responses.
+func (c *coordinator) verifyResponse(ctx context.Context, result *fantasy.AgentResult, prompt string) {
+	if c.rlmService == nil {
+		return
+	}
+
+	verifier := c.rlmService.OutputVerifier()
+	if verifier == nil || !verifier.Enabled() {
+		return
+	}
+
+	// Extract response text
+	responseText := result.Response.Content.Text()
+	if responseText == "" {
+		return
+	}
+
+	// Use prompt as verification context
+	verifyContext := prompt
+
+	// Run verification asynchronously to not block response
+	go func() {
+		verifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		report, err := verifier.VerifyOutput(verifyCtx, responseText, verifyContext)
+		if err != nil {
+			slog.Debug("Output verification failed", "error", err)
+			return
+		}
+
+		if report != nil && report.OverallRisk > 0.5 {
+			slog.Warn("High-risk response detected",
+				"risk", report.OverallRisk,
+				"flagged_claims", report.FlaggedClaims,
+			)
+		}
+	}()
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/rand/recurse/internal/memory/hypergraph"
 	"github.com/rand/recurse/internal/rlm/checkpoint"
 	"github.com/rand/recurse/internal/rlm/compress"
+	"github.com/rand/recurse/internal/rlm/hallucination"
 	"github.com/rand/recurse/internal/rlm/meta"
 	"github.com/rand/recurse/internal/rlm/orchestrator"
 	"github.com/rand/recurse/internal/rlm/repl"
@@ -69,6 +70,23 @@ type ServiceConfig struct {
 	// CompressionThreshold is the token count above which compression is applied.
 	// Default: 8000 tokens.
 	CompressionThreshold int
+
+	// Hallucination configures hallucination detection.
+	// [SPEC-08.19-22] Output verification integration.
+	Hallucination HallucinationConfig
+}
+
+// HallucinationConfig configures hallucination detection for the RLM service.
+type HallucinationConfig struct {
+	// OutputVerificationEnabled enables verification of agent responses.
+	// [SPEC-08.19] Agent responses SHALL be verified before returning to the user.
+	OutputVerificationEnabled bool
+
+	// OutputVerifierConfig configures the output verifier behavior.
+	OutputVerifierConfig hallucination.OutputVerifierConfig
+
+	// DetectorConfig configures the underlying detector.
+	DetectorConfig hallucination.DetectorConfig
 }
 
 // DefaultServiceConfig returns sensible defaults for the RLM service.
@@ -91,6 +109,11 @@ func DefaultServiceConfig() ServiceConfig {
 		CompressionEnabled:   true, // Enable compression by default
 		CompressionThreshold: 8000, // Compress when context exceeds 8K tokens
 		Compression:          compress.DefaultManagerConfig(),
+		Hallucination: HallucinationConfig{
+			OutputVerificationEnabled: false, // Disabled by default for performance
+			OutputVerifierConfig:      hallucination.DefaultOutputVerifierConfig(),
+			DetectorConfig:            hallucination.DefaultDetectorConfig(),
+		},
 	}
 }
 
@@ -117,6 +140,10 @@ type Service struct {
 	checkpoint      *checkpoint.Manager      // session state persistence
 	learner         *learning.Engine         // continuous learning engine
 	budgetMgr       *budget.Manager          // budget tracking and enforcement
+
+	// Hallucination detection [SPEC-08.19-22]
+	detector       *hallucination.Detector       // main detector orchestrator
+	outputVerifier *hallucination.OutputVerifier // verifies agent responses
 
 	// Configuration
 	config ServiceConfig
@@ -239,6 +266,27 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		budgetMgr = budget.NewManager(budgetStore, config.Budget)
 	}
 
+	// Create hallucination detection components [SPEC-08.19-22]
+	var detector *hallucination.Detector
+	var outputVerifier *hallucination.OutputVerifier
+	if config.Hallucination.OutputVerificationEnabled {
+		// Create backend using the LLM client for probability estimation
+		// [SPEC-08.27] Uses self-verification backend by default
+		backendCfg := hallucination.DefaultBackendConfig()
+		backend, err := hallucination.NewBackend(backendCfg, llmClient)
+		if err != nil {
+			slog.Warn("failed to create hallucination backend, disabling detection", "error", err)
+		} else {
+			// Create detector with configured settings
+			detector = hallucination.NewDetector(backend, config.Hallucination.DetectorConfig)
+
+			// Create output verifier
+			verifierConfig := config.Hallucination.OutputVerifierConfig
+			verifierConfig.Enabled = true
+			outputVerifier = hallucination.NewOutputVerifier(detector, verifierConfig)
+		}
+	}
+
 	svc := &Service{
 		store:           store,
 		controller:      controller,
@@ -251,6 +299,8 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		checkpoint:      checkpointMgr,
 		learner:         learner,
 		budgetMgr:       budgetMgr,
+		detector:        detector,
+		outputVerifier:  outputVerifier,
 		config:          config,
 	}
 
@@ -1069,6 +1119,47 @@ func (s *Service) UpdateBudgetLimits(limits budget.Limits) {
 	if s.budgetMgr != nil {
 		s.budgetMgr.UpdateLimits(limits)
 	}
+}
+
+// =============================================================================
+// Hallucination Detection [SPEC-08.19-22]
+// =============================================================================
+
+// OutputVerifier returns the output verifier for agent response verification.
+// Returns nil if output verification is not enabled.
+func (s *Service) OutputVerifier() *hallucination.OutputVerifier {
+	return s.outputVerifier
+}
+
+// Detector returns the hallucination detector.
+// Returns nil if hallucination detection is not enabled.
+func (s *Service) Detector() *hallucination.Detector {
+	return s.detector
+}
+
+// IsOutputVerificationEnabled returns whether output verification is enabled.
+func (s *Service) IsOutputVerificationEnabled() bool {
+	return s.outputVerifier != nil && s.outputVerifier.Enabled()
+}
+
+// VerifyOutput verifies an agent response against conversation context.
+// [SPEC-08.19] Agent responses SHALL be verified before returning to the user.
+// [SPEC-08.22] SHOULD NOT automatically reject; flags high-risk responses instead.
+// Returns nil result if verification is disabled or not applicable.
+func (s *Service) VerifyOutput(ctx context.Context, response string, conversationContext string) (*hallucination.OutputVerificationResult, error) {
+	if s.outputVerifier == nil {
+		return nil, nil
+	}
+	return s.outputVerifier.VerifyOutput(ctx, response, conversationContext)
+}
+
+// GetSelfCorrectionHint returns a hint for agent self-correction based on verification results.
+// [SPEC-08.21] Verification results SHOULD be made available to the agent for self-correction.
+func (s *Service) GetSelfCorrectionHint(result *hallucination.OutputVerificationResult) *hallucination.SelfCorrectionHint {
+	if s.outputVerifier == nil || result == nil {
+		return nil
+	}
+	return s.outputVerifier.GetVerificationResultForSelfCorrection(result)
 }
 
 // wrapperContextPreparer adapts the Wrapper to the orchestrator.ContextPreparer interface.
