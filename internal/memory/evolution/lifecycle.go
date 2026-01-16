@@ -2,12 +2,55 @@ package evolution
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/rand/recurse/internal/memory/hypergraph"
 )
+
+// TaskSummary represents a summary of a single task within a session.
+type TaskSummary struct {
+	Description string        `json:"description"`
+	Outcome     string        `json:"outcome"`
+	Duration    time.Duration `json:"duration"`
+	Success     bool          `json:"success"`
+}
+
+// SessionSummary represents a summary of an entire session.
+// [SPEC-09.01] Created at session end to capture what was accomplished.
+type SessionSummary struct {
+	SessionID string    `json:"session_id"`
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
+	Duration  time.Duration `json:"duration"`
+
+	// Content (what was done)
+	TasksAttempted []TaskSummary `json:"tasks_attempted,omitempty"`
+	TasksCompleted []TaskSummary `json:"tasks_completed,omitempty"`
+	TasksFailed    []TaskSummary `json:"tasks_failed,omitempty"`
+
+	// Learning (what was discovered)
+	KeyInsights  []string `json:"key_insights,omitempty"`
+	BlockersHit  []string `json:"blockers_hit,omitempty"`
+	PatternsUsed []string `json:"patterns_used,omitempty"`
+
+	// Context (for resumption)
+	ActiveFiles    []string `json:"active_files,omitempty"`
+	UnfinishedWork string   `json:"unfinished_work,omitempty"`
+	NextSteps      []string `json:"next_steps,omitempty"`
+
+	// Human-readable summary
+	Summary string `json:"summary"`
+}
+
+// SessionSynthesizer generates session summaries from raw experiences.
+// [SPEC-09.01] Implementations typically use an LLM for synthesis.
+type SessionSynthesizer interface {
+	// Synthesize creates a session summary from the given experiences.
+	Synthesize(ctx context.Context, sessionID string, experiences []*hypergraph.Node, duration time.Duration) (*SessionSummary, error)
+}
 
 // LifecycleConfig configures the lifecycle manager.
 type LifecycleConfig struct {
@@ -84,6 +127,11 @@ type LifecycleManager struct {
 	// Meta-evolution manager (optional)
 	metaEvolution *MetaEvolutionManager
 
+	// Session synthesis [SPEC-09.01]
+	synthesizer   SessionSynthesizer
+	sessionID     string
+	sessionStart  time.Time
+
 	// Callbacks for lifecycle events
 	onTaskComplete  []func(*LifecycleResult)
 	onSessionEnd    []func(*LifecycleResult)
@@ -112,6 +160,8 @@ func NewLifecycleManager(store *hypergraph.Store, config LifecycleConfig) (*Life
 		decayer:      NewDecayer(store, config.Decay),
 		audit:        audit,
 		stopIdle:     make(chan struct{}),
+		sessionID:    fmt.Sprintf("session-%d", time.Now().UnixNano()),
+		sessionStart: time.Now(),
 	}, nil
 }
 
@@ -184,14 +234,24 @@ func (m *LifecycleManager) TaskComplete(ctx context.Context) (*LifecycleResult, 
 }
 
 // SessionEnd handles session end lifecycle.
-// This consolidates session tier, promotes to long-term, and optionally runs decay.
+// This consolidates session tier, promotes to long-term, optionally runs decay,
+// and creates a session summary node [SPEC-09.01].
 func (m *LifecycleManager) SessionEnd(ctx context.Context) (*LifecycleResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	start := time.Now()
+	sessionDuration := time.Since(m.sessionStart)
 	result := &LifecycleResult{
 		Operation: "session_end",
+	}
+
+	// Step 0: Create session summary [SPEC-09.01]
+	if m.synthesizer != nil {
+		if err := m.createSessionSummary(ctx, sessionDuration); err != nil {
+			// Non-fatal: log but continue with lifecycle
+			result.Errors = append(result.Errors, fmt.Errorf("create session summary: %w", err))
+		}
 	}
 
 	// Step 1: Consolidate session tier
@@ -236,10 +296,57 @@ func (m *LifecycleManager) SessionEnd(ctx context.Context) (*LifecycleResult, er
 		cb(result)
 	}
 
+	// Reset session for next time
+	m.sessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
+	m.sessionStart = time.Now()
+
 	if len(result.Errors) > 0 {
 		return result, result.Errors[0]
 	}
 	return result, nil
+}
+
+// createSessionSummary creates a session summary node using the synthesizer.
+// [SPEC-09.01] Called during SessionEnd to capture what was accomplished.
+func (m *LifecycleManager) createSessionSummary(ctx context.Context, duration time.Duration) error {
+	// Query all experiences from this session (task + session tiers)
+	experiences, err := m.store.ListNodes(ctx, hypergraph.NodeFilter{
+		Types: []hypergraph.NodeType{hypergraph.NodeTypeExperience},
+		Tiers: []hypergraph.Tier{hypergraph.TierTask, hypergraph.TierSession},
+		Limit: 100,
+	})
+	if err != nil {
+		return fmt.Errorf("query experiences: %w", err)
+	}
+
+	// Don't create summary if no experiences
+	if len(experiences) == 0 {
+		return nil
+	}
+
+	// Synthesize the summary
+	summary, err := m.synthesizer.Synthesize(ctx, m.sessionID, experiences, duration)
+	if err != nil {
+		return fmt.Errorf("synthesize: %w", err)
+	}
+
+	// Store as experience node with subtype "session_summary"
+	node := hypergraph.NewNode(hypergraph.NodeTypeExperience, summary.Summary)
+	node.Subtype = "session_summary"
+	node.Tier = hypergraph.TierSession // Will be promoted to longterm
+	node.Confidence = 1.0
+
+	metadataBytes, err := json.Marshal(summary)
+	if err != nil {
+		return fmt.Errorf("marshal summary: %w", err)
+	}
+	node.Metadata = metadataBytes
+
+	if err := m.store.CreateNode(ctx, node); err != nil {
+		return fmt.Errorf("create node: %w", err)
+	}
+
+	return nil
 }
 
 // IdleMaintenance runs background maintenance tasks.
@@ -429,4 +536,35 @@ func (m *LifecycleManager) MetaEvolution() *MetaEvolutionManager {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.metaEvolution
+}
+
+// SetSessionSynthesizer attaches a session synthesizer for creating session summaries.
+// [SPEC-09.01]
+func (m *LifecycleManager) SetSessionSynthesizer(synth SessionSynthesizer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.synthesizer = synth
+}
+
+// SetSessionID sets the current session ID for tracking.
+func (m *LifecycleManager) SetSessionID(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionID = sessionID
+}
+
+// SessionID returns the current session ID.
+func (m *LifecycleManager) SessionID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessionID
+}
+
+// StartSession marks the beginning of a new session.
+// [SPEC-09.01] Resets session tracking for summary generation.
+func (m *LifecycleManager) StartSession(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionID = sessionID
+	m.sessionStart = time.Now()
 }

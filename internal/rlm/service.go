@@ -2,6 +2,7 @@ package rlm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -198,6 +199,10 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		evolution.DefaultMetaEvolutionConfig(),
 	)
 	lifecycle.SetMetaEvolution(metaEvolution)
+
+	// Create session synthesizer for session summaries [SPEC-09.01]
+	synthesizer := NewLLMSynthesizer(llmClient)
+	lifecycle.SetSessionSynthesizer(synthesizer)
 
 	// Wire outcome recorder to hybrid search for meta-evolution tracking
 	store.SetOutcomeRecorder(outcomeStore)
@@ -607,6 +612,80 @@ func (s *Service) RecordExperience(ctx context.Context, content string) error {
 	node := hypergraph.NewNode(hypergraph.NodeTypeExperience, content)
 	node.Tier = hypergraph.TierTask
 	return s.store.CreateNode(ctx, node)
+}
+
+// SessionContext contains context for resuming a session.
+// [SPEC-09.08] Returned by ResumeSession for "What was I working on?" queries.
+type SessionContext struct {
+	// PreviousSession is the most recent session summary
+	PreviousSession *evolution.SessionSummary `json:"previous_session,omitempty"`
+
+	// UnfinishedWork describes what wasn't completed
+	UnfinishedWork string `json:"unfinished_work,omitempty"`
+
+	// RecommendedStart lists suggested starting points
+	RecommendedStart []string `json:"recommended_start,omitempty"`
+
+	// ActiveFiles lists files that were being worked on
+	ActiveFiles []string `json:"active_files,omitempty"`
+
+	// RecentSessions lists summaries of recent sessions (beyond the latest)
+	RecentSessions []*evolution.SessionSummary `json:"recent_sessions,omitempty"`
+}
+
+// ResumeSession queries for session resumption context.
+// [SPEC-09.08] Answers "What was I working on?" with actionable context.
+func (s *Service) ResumeSession(ctx context.Context) (*SessionContext, error) {
+	// Query recent session_summary nodes from longterm tier
+	summaries, err := s.store.ListNodes(ctx, hypergraph.NodeFilter{
+		Types:    []hypergraph.NodeType{hypergraph.NodeTypeExperience},
+		Subtypes: []string{"session_summary"},
+		Tiers:    []hypergraph.Tier{hypergraph.TierLongterm},
+		Limit:    5,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query session summaries: %w", err)
+	}
+
+	if len(summaries) == 0 {
+		return nil, nil // No previous sessions
+	}
+
+	// Parse the most recent summary
+	latest := summaries[0]
+	var latestSummary evolution.SessionSummary
+	if len(latest.Metadata) > 0 {
+		if err := json.Unmarshal(latest.Metadata, &latestSummary); err != nil {
+			// Fallback to basic info from content
+			latestSummary.Summary = latest.Content
+		}
+	} else {
+		latestSummary.Summary = latest.Content
+	}
+
+	result := &SessionContext{
+		PreviousSession:  &latestSummary,
+		UnfinishedWork:   latestSummary.UnfinishedWork,
+		RecommendedStart: latestSummary.NextSteps,
+		ActiveFiles:      latestSummary.ActiveFiles,
+	}
+
+	// Include additional recent sessions if available
+	if len(summaries) > 1 {
+		for _, node := range summaries[1:] {
+			var summary evolution.SessionSummary
+			if len(node.Metadata) > 0 {
+				if err := json.Unmarshal(node.Metadata, &summary); err != nil {
+					summary.Summary = node.Content
+				}
+			} else {
+				summary.Summary = node.Content
+			}
+			result.RecentSessions = append(result.RecentSessions, &summary)
+		}
+	}
+
+	return result, nil
 }
 
 // GetTraceEvents returns recent trace events.
