@@ -82,8 +82,15 @@ type HallucinationConfig struct {
 	// [SPEC-08.19] Agent responses SHALL be verified before returning to the user.
 	OutputVerificationEnabled bool
 
+	// TraceAuditEnabled enables auditing of reasoning traces.
+	// [SPEC-08.23] RLM execution traces SHALL be audited for procedural hallucinations.
+	TraceAuditEnabled bool
+
 	// OutputVerifierConfig configures the output verifier behavior.
 	OutputVerifierConfig hallucination.OutputVerifierConfig
+
+	// TraceAuditorConfig configures the trace auditor behavior.
+	TraceAuditorConfig hallucination.TraceAuditorConfig
 
 	// DetectorConfig configures the underlying detector.
 	DetectorConfig hallucination.DetectorConfig
@@ -111,7 +118,9 @@ func DefaultServiceConfig() ServiceConfig {
 		Compression:          compress.DefaultManagerConfig(),
 		Hallucination: HallucinationConfig{
 			OutputVerificationEnabled: false, // Disabled by default for performance
+			TraceAuditEnabled:         false, // Disabled by default for performance
 			OutputVerifierConfig:      hallucination.DefaultOutputVerifierConfig(),
+			TraceAuditorConfig:        hallucination.DefaultTraceAuditorConfig(),
 			DetectorConfig:            hallucination.DefaultDetectorConfig(),
 		},
 	}
@@ -141,9 +150,10 @@ type Service struct {
 	learner         *learning.Engine         // continuous learning engine
 	budgetMgr       *budget.Manager          // budget tracking and enforcement
 
-	// Hallucination detection [SPEC-08.19-22]
+	// Hallucination detection [SPEC-08.19-26]
 	detector       *hallucination.Detector       // main detector orchestrator
 	outputVerifier *hallucination.OutputVerifier // verifies agent responses
+	traceAuditor   *hallucination.TraceAuditor   // audits reasoning traces [SPEC-08.23-26]
 
 	// Configuration
 	config ServiceConfig
@@ -267,9 +277,13 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	}
 
 	// Create hallucination detection components [SPEC-08.19-22]
+	// Create hallucination detection components [SPEC-08.19-26]
 	var detector *hallucination.Detector
 	var outputVerifier *hallucination.OutputVerifier
-	if config.Hallucination.OutputVerificationEnabled {
+	var traceAuditor *hallucination.TraceAuditor
+
+	// Create detector if any hallucination detection is enabled
+	if config.Hallucination.OutputVerificationEnabled || config.Hallucination.TraceAuditEnabled {
 		// Create backend using the LLM client for probability estimation
 		// [SPEC-08.27] Uses self-verification backend by default
 		backendCfg := hallucination.DefaultBackendConfig()
@@ -280,10 +294,19 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 			// Create detector with configured settings
 			detector = hallucination.NewDetector(backend, config.Hallucination.DetectorConfig)
 
-			// Create output verifier
-			verifierConfig := config.Hallucination.OutputVerifierConfig
-			verifierConfig.Enabled = true
-			outputVerifier = hallucination.NewOutputVerifier(detector, verifierConfig)
+			// Create output verifier if enabled [SPEC-08.19-22]
+			if config.Hallucination.OutputVerificationEnabled {
+				verifierConfig := config.Hallucination.OutputVerifierConfig
+				verifierConfig.Enabled = true
+				outputVerifier = hallucination.NewOutputVerifier(detector, verifierConfig)
+			}
+
+			// Create trace auditor if enabled [SPEC-08.23-26]
+			if config.Hallucination.TraceAuditEnabled {
+				auditorConfig := config.Hallucination.TraceAuditorConfig
+				auditorConfig.Enabled = true
+				traceAuditor = hallucination.NewTraceAuditor(detector, auditorConfig)
+			}
 		}
 	}
 
@@ -301,6 +324,7 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		budgetMgr:       budgetMgr,
 		detector:        detector,
 		outputVerifier:  outputVerifier,
+		traceAuditor:    traceAuditor,
 		config:          config,
 	}
 
@@ -316,6 +340,11 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	// Wire ContextPreparer to orchestrator.Core for context externalization [SPEC-09.06]
 	// This enables the orchestrator to use the wrapper for context preparation.
 	controller.Core().SetContextPreparer(&wrapperContextPreparer{wrapper: svc.wrapper})
+
+	// Wire TraceAuditor to orchestrator.Core for hallucination detection [SPEC-08.23-26]
+	if traceAuditor != nil {
+		controller.Core().SetTraceAuditor(traceAuditor)
+	}
 
 	// Wire up lifecycle callbacks for statistics
 	lifecycle.OnTaskComplete(func(result *evolution.LifecycleResult) {
@@ -1140,6 +1169,17 @@ func (s *Service) Detector() *hallucination.Detector {
 // IsOutputVerificationEnabled returns whether output verification is enabled.
 func (s *Service) IsOutputVerificationEnabled() bool {
 	return s.outputVerifier != nil && s.outputVerifier.Enabled()
+}
+
+// TraceAuditor returns the trace auditor for reasoning trace verification.
+// [SPEC-08.23-26] Returns nil if trace auditing is not enabled.
+func (s *Service) TraceAuditor() *hallucination.TraceAuditor {
+	return s.traceAuditor
+}
+
+// IsTraceAuditEnabled returns whether trace auditing is enabled.
+func (s *Service) IsTraceAuditEnabled() bool {
+	return s.traceAuditor != nil && s.traceAuditor.Enabled()
 }
 
 // VerifyOutput verifies an agent response against conversation context.

@@ -12,6 +12,7 @@ import (
 	"github.com/rand/recurse/internal/memory/hypergraph"
 	"github.com/rand/recurse/internal/rlm/async"
 	"github.com/rand/recurse/internal/rlm/decompose"
+	"github.com/rand/recurse/internal/rlm/hallucination"
 	"github.com/rand/recurse/internal/rlm/meta"
 	"github.com/rand/recurse/internal/rlm/repl"
 	"github.com/rand/recurse/internal/rlm/synthesize"
@@ -31,6 +32,9 @@ type Core struct {
 
 	// Context externalization [SPEC-09.06]
 	contextPreparer ContextPreparer
+
+	// Hallucination detection [SPEC-08.23-26]
+	traceAuditor *hallucination.TraceAuditor
 }
 
 // CoreConfig configures the orchestration core.
@@ -151,6 +155,17 @@ type PreparedContext struct {
 // [SPEC-09.06]
 func (c *Core) SetContextPreparer(preparer ContextPreparer) {
 	c.contextPreparer = preparer
+}
+
+// SetTraceAuditor sets the trace auditor for hallucination detection.
+// [SPEC-08.23-26]
+func (c *Core) SetTraceAuditor(auditor *hallucination.TraceAuditor) {
+	c.traceAuditor = auditor
+}
+
+// TraceAuditor returns the trace auditor.
+func (c *Core) TraceAuditor() *hallucination.TraceAuditor {
+	return c.traceAuditor
 }
 
 // Execute runs the RLM orchestration loop for a task.
