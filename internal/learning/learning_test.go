@@ -448,3 +448,206 @@ func TestApplyResult_Methods(t *testing.T) {
 		assert.Equal(t, 4, result.ItemCount())
 	})
 }
+
+func TestStore_UpdatePattern(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Create pattern
+	pattern := &LearnedPattern{
+		Name:        "Error Handling",
+		PatternType: PatternTypeCode,
+		Trigger:     "Go error check",
+		Template:    "if err != nil { return err }",
+		Domains:     []string{"go"},
+		SuccessRate: 0.8,
+		UsageCount:  5,
+	}
+
+	err := store.StorePattern(ctx, pattern)
+	require.NoError(t, err)
+	require.NotEmpty(t, pattern.ID)
+
+	// Update pattern
+	pattern.SuccessRate = 0.95
+	pattern.UsageCount = 10
+	pattern.Examples = []string{"example1", "example2"}
+
+	err = store.UpdatePattern(ctx, pattern)
+	require.NoError(t, err)
+
+	// Verify update
+	got, err := store.GetPattern(ctx, pattern.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, 0.95, got.SuccessRate)
+	assert.Equal(t, 10, got.UsageCount)
+	assert.Len(t, got.Examples, 2)
+}
+
+func TestStore_DeletePattern(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Create pattern
+	pattern := &LearnedPattern{
+		Name:        "Table-Driven Tests",
+		PatternType: PatternTypeCode,
+		Domains:     []string{"go"},
+		SuccessRate: 0.9,
+	}
+
+	err := store.StorePattern(ctx, pattern)
+	require.NoError(t, err)
+	require.NotEmpty(t, pattern.ID)
+
+	// Verify it exists
+	got, err := store.GetPattern(ctx, pattern.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	// Delete pattern
+	err = store.DeletePattern(ctx, pattern.ID)
+	require.NoError(t, err)
+
+	// Verify deletion - may return nil or error depending on underlying store
+	got, err = store.GetPattern(ctx, pattern.ID)
+	if err == nil {
+		assert.Nil(t, got)
+	} else {
+		assert.Contains(t, err.Error(), "not found")
+	}
+}
+
+func TestStore_UpdateConstraint(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Create constraint
+	constraint := &LearnedConstraint{
+		ConstraintType: ConstraintAvoid,
+		Description:    "Avoid using panic",
+		Correction:     "Return errors instead",
+		Domain:         "go",
+		Severity:       0.7,
+		Source:         SourceCorrection,
+		ViolationCount: 2,
+	}
+
+	err := store.StoreConstraint(ctx, constraint)
+	require.NoError(t, err)
+	require.NotEmpty(t, constraint.ID)
+
+	// Update constraint
+	constraint.Severity = 0.9
+	constraint.ViolationCount = 5
+	constraint.LastTriggered = time.Now()
+
+	err = store.UpdateConstraint(ctx, constraint)
+	require.NoError(t, err)
+
+	// Verify update
+	constraints, err := store.ListConstraints(ctx, "go", 0)
+	require.NoError(t, err)
+	require.Len(t, constraints, 1)
+	assert.Equal(t, 0.9, constraints[0].Severity)
+	assert.Equal(t, 5, constraints[0].ViolationCount)
+}
+
+func TestStore_DeleteConstraint(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Create constraint
+	constraint := &LearnedConstraint{
+		ConstraintType: ConstraintSecurity,
+		Description:    "Never store passwords in plain text",
+		Domain:         "security",
+		Severity:       1.0,
+		Source:         SourceExplicit,
+	}
+
+	err := store.StoreConstraint(ctx, constraint)
+	require.NoError(t, err)
+	require.NotEmpty(t, constraint.ID)
+
+	// Verify it exists
+	constraints, err := store.ListConstraints(ctx, "security", 0)
+	require.NoError(t, err)
+	require.Len(t, constraints, 1)
+
+	// Delete constraint
+	err = store.DeleteConstraint(ctx, constraint.ID)
+	require.NoError(t, err)
+
+	// Verify deletion
+	constraints, err = store.ListConstraints(ctx, "security", 0)
+	require.NoError(t, err)
+	assert.Len(t, constraints, 0)
+}
+
+func TestConsolidator_ProcessPattern(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Create a pattern with old last used time
+	pattern := &LearnedPattern{
+		Name:        "Old Pattern",
+		PatternType: PatternTypeCode,
+		SuccessRate: 0.5,
+		UsageCount:  1,
+		LastUsed:    time.Now().Add(-30 * 24 * time.Hour), // 30 days ago
+	}
+	err := store.StorePattern(ctx, pattern)
+	require.NoError(t, err)
+
+	consolidator := NewConsolidator(store, ConsolidatorConfig{
+		DecayHalfLife: 7 * 24 * time.Hour,
+		MinConfidence: 0.3,
+	})
+
+	// Process pattern - should trigger decay or pruning
+	processed := consolidator.processPattern(ctx, pattern)
+	assert.True(t, processed, "pattern should be processed")
+}
+
+func TestConsolidator_ProcessConstraint(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Create an inferred constraint with old last triggered time
+	constraint := &LearnedConstraint{
+		ConstraintType: ConstraintAvoid,
+		Description:    "Old inferred constraint",
+		Domain:         "test",
+		Severity:       0.3,
+		Source:         SourceInferred,
+		ViolationCount: 1,
+		LastTriggered:  time.Now().Add(-60 * 24 * time.Hour), // 60 days ago
+	}
+	err := store.StoreConstraint(ctx, constraint)
+	require.NoError(t, err)
+
+	consolidator := NewConsolidator(store, ConsolidatorConfig{
+		DecayHalfLife: 7 * 24 * time.Hour,
+		MinConfidence: 0.1,
+	})
+
+	// Process constraint - should trigger decay or pruning
+	processed := consolidator.processConstraint(ctx, constraint)
+	assert.True(t, processed, "constraint should be processed")
+
+	// Explicit constraints should not decay
+	explicitConstraint := &LearnedConstraint{
+		ConstraintType: ConstraintSecurity,
+		Description:    "Explicit constraint",
+		Domain:         "test",
+		Severity:       1.0,
+		Source:         SourceExplicit,
+	}
+	err = store.StoreConstraint(ctx, explicitConstraint)
+	require.NoError(t, err)
+
+	processed = consolidator.processConstraint(ctx, explicitConstraint)
+	assert.False(t, processed, "explicit constraint should not be processed")
+}

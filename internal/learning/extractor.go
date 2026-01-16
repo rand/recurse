@@ -389,8 +389,7 @@ func (e *Extractor) storeOrReinforcePattern(ctx context.Context, pattern *Learne
 					ex.Examples = append(ex.Examples, example)
 				}
 			}
-			// Note: Would need UpdatePattern method
-			return nil
+			return e.store.UpdatePattern(ctx, ex)
 		}
 	}
 

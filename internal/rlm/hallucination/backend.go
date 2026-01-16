@@ -91,9 +91,11 @@ type CachingBackend struct {
 	ttl     time.Duration
 	maxSize int
 
-	mu    sync.RWMutex
-	cache map[string]CacheEntry
-	order []string // LRU order
+	mu     sync.RWMutex
+	cache  map[string]CacheEntry
+	order  []string // LRU order
+	hits   int64    // Cache hit count
+	misses int64    // Cache miss count
 }
 
 // NewCachingBackend creates a caching wrapper.
@@ -121,6 +123,7 @@ func (c *CachingBackend) EstimateProbability(ctx context.Context, claim, context
 	c.mu.RLock()
 	if entry, ok := c.cache[key]; ok {
 		if time.Since(entry.CreatedAt) < c.ttl {
+			c.hits++
 			c.mu.RUnlock()
 			return entry.Probability, nil
 		}
@@ -128,6 +131,10 @@ func (c *CachingBackend) EstimateProbability(ctx context.Context, claim, context
 	c.mu.RUnlock()
 
 	// Cache miss - call backend
+	c.mu.Lock()
+	c.misses++
+	c.mu.Unlock()
+
 	prob, err := c.backend.EstimateProbability(ctx, claim, context)
 	if err != nil {
 		return 0, err
@@ -145,6 +152,7 @@ func (c *CachingBackend) BatchEstimate(ctx context.Context, claims []string, con
 	results := make([]float64, len(claims))
 	var uncached []int // Indices of uncached claims
 	var uncachedClaims []string
+	var batchHits int64
 
 	// Check cache for each claim
 	c.mu.RLock()
@@ -152,12 +160,19 @@ func (c *CachingBackend) BatchEstimate(ctx context.Context, claims []string, con
 		key := c.cacheKey(claim, context)
 		if entry, ok := c.cache[key]; ok && time.Since(entry.CreatedAt) < c.ttl {
 			results[i] = entry.Probability
+			batchHits++
 		} else {
 			uncached = append(uncached, i)
 			uncachedClaims = append(uncachedClaims, claim)
 		}
 	}
 	c.mu.RUnlock()
+
+	// Update hit/miss counters
+	c.mu.Lock()
+	c.hits += batchHits
+	c.misses += int64(len(uncached))
+	c.mu.Unlock()
 
 	// If all cached, return early
 	if len(uncached) == 0 {
@@ -209,7 +224,7 @@ func (c *CachingBackend) set(key string, prob float64) {
 func (c *CachingBackend) CacheStats() (size int, hits int, misses int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return len(c.cache), 0, 0 // TODO: track hits/misses
+	return len(c.cache), int(c.hits), int(c.misses)
 }
 
 // ClearCache removes all cached entries.

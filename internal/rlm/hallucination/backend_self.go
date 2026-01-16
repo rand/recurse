@@ -3,6 +3,7 @@ package hallucination
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -12,6 +13,7 @@ type SelfVerifyBackend struct {
 	client        LLMCompleter
 	timeout       time.Duration
 	samplingCount int
+	maxConcurrent int
 }
 
 // NewSelfVerifyBackend creates a self-verification backend.
@@ -26,6 +28,14 @@ func NewSelfVerifyBackend(client LLMCompleter, timeout time.Duration, samplingCo
 		client:        client,
 		timeout:       timeout,
 		samplingCount: samplingCount,
+		maxConcurrent: 4, // Default concurrency limit
+	}
+}
+
+// SetMaxConcurrent sets the maximum concurrent batch operations.
+func (b *SelfVerifyBackend) SetMaxConcurrent(n int) {
+	if n > 0 {
+		b.maxConcurrent = n
 	}
 }
 
@@ -51,16 +61,60 @@ func (b *SelfVerifyBackend) EstimateProbability(ctx context.Context, claim, cont
 }
 
 func (b *SelfVerifyBackend) BatchEstimate(ctx context.Context, claims []string, context string) ([]float64, error) {
-	results := make([]float64, len(claims))
+	if len(claims) == 0 {
+		return []float64{}, nil
+	}
 
-	// Simple sequential batch for now
-	// TODO: implement concurrent batch processing
+	// For small batches, process sequentially to avoid goroutine overhead
+	if len(claims) <= 2 {
+		results := make([]float64, len(claims))
+		for i, claim := range claims {
+			prob, err := b.EstimateProbability(ctx, claim, context)
+			if err != nil {
+				return nil, err
+			}
+			results[i] = prob
+		}
+		return results, nil
+	}
+
+	// Concurrent batch processing with semaphore
+	results := make([]float64, len(claims))
+	errs := make([]error, len(claims))
+	sem := make(chan struct{}, b.maxConcurrent)
+	var wg sync.WaitGroup
+
 	for i, claim := range claims {
-		prob, err := b.EstimateProbability(ctx, claim, context)
+		wg.Add(1)
+		go func(idx int, c string) {
+			defer wg.Done()
+
+			// Acquire semaphore
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Check context cancellation
+			if ctx.Err() != nil {
+				errs[idx] = ctx.Err()
+				return
+			}
+
+			prob, err := b.EstimateProbability(ctx, c, context)
+			if err != nil {
+				errs[idx] = err
+				return
+			}
+			results[idx] = prob
+		}(i, claim)
+	}
+
+	wg.Wait()
+
+	// Check for errors
+	for _, err := range errs {
 		if err != nil {
 			return nil, err
 		}
-		results[i] = prob
 	}
 
 	return results, nil

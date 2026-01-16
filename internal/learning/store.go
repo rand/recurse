@@ -239,6 +239,42 @@ func (s *Store) ListPatterns(ctx context.Context, patternType PatternType, limit
 	return patterns, nil
 }
 
+// UpdatePattern updates an existing pattern.
+func (s *Store) UpdatePattern(ctx context.Context, pattern *LearnedPattern) error {
+	node, err := s.graph.GetNode(ctx, pattern.ID)
+	if err != nil {
+		return fmt.Errorf("get pattern for update: %w", err)
+	}
+	if node == nil {
+		return fmt.Errorf("pattern not found: %s", pattern.ID)
+	}
+
+	metadata, _ := json.Marshal(map[string]interface{}{
+		"pattern_type": pattern.PatternType,
+		"trigger":      pattern.Trigger,
+		"template":     pattern.Template,
+		"examples":     pattern.Examples,
+		"domains":      pattern.Domains,
+		"success_rate": pattern.SuccessRate,
+		"usage_count":  pattern.UsageCount,
+		"last_used":    pattern.LastUsed,
+		"extra":        pattern.Metadata,
+	})
+
+	node.Content = pattern.Name
+	node.Confidence = pattern.SuccessRate
+	node.Metadata = metadata
+	node.Embedding = serializeEmbedding(pattern.Embedding)
+	node.UpdatedAt = time.Now()
+
+	return s.graph.UpdateNode(ctx, node)
+}
+
+// DeletePattern removes a pattern.
+func (s *Store) DeletePattern(ctx context.Context, id string) error {
+	return s.graph.DeleteNode(ctx, id)
+}
+
 // StorePreference persists a user preference.
 func (s *Store) StorePreference(ctx context.Context, pref *UserPreference) error {
 	if pref.ID == "" {
@@ -403,6 +439,42 @@ func (s *Store) ListConstraints(ctx context.Context, domain string, minSeverity 
 		constraints = append(constraints, constraint)
 	}
 	return constraints, nil
+}
+
+// UpdateConstraint updates an existing constraint.
+func (s *Store) UpdateConstraint(ctx context.Context, constraint *LearnedConstraint) error {
+	node, err := s.graph.GetNode(ctx, constraint.ID)
+	if err != nil {
+		return fmt.Errorf("get constraint for update: %w", err)
+	}
+	if node == nil {
+		return fmt.Errorf("constraint not found: %s", constraint.ID)
+	}
+
+	metadata, _ := json.Marshal(map[string]interface{}{
+		"constraint_type": constraint.ConstraintType,
+		"correction":      constraint.Correction,
+		"trigger":         constraint.Trigger,
+		"domain":          constraint.Domain,
+		"severity":        constraint.Severity,
+		"source":          constraint.Source,
+		"violation_count": constraint.ViolationCount,
+		"last_triggered":  constraint.LastTriggered,
+		"extra":           constraint.Metadata,
+	})
+
+	node.Content = constraint.Description
+	node.Confidence = constraint.Severity
+	node.Metadata = metadata
+	node.Embedding = serializeEmbedding(constraint.Embedding)
+	node.UpdatedAt = time.Now()
+
+	return s.graph.UpdateNode(ctx, node)
+}
+
+// DeleteConstraint removes a constraint.
+func (s *Store) DeleteConstraint(ctx context.Context, id string) error {
+	return s.graph.DeleteNode(ctx, id)
 }
 
 // RecordSignal stores a learning signal.

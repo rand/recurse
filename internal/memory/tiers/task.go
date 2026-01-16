@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/rand/recurse/internal/memory/embeddings"
 	"github.com/rand/recurse/internal/memory/hypergraph"
 )
 
@@ -440,8 +441,20 @@ type TaskStats struct {
 // Helper methods
 
 // findSimilar finds an existing node with similar content.
-// For now, uses exact match; will be enhanced with embedding similarity.
+// Uses embedding-based similarity when available, falls back to content search.
 func (tm *TaskMemory) findSimilar(ctx context.Context, content string, nodeType hypergraph.NodeType) (*hypergraph.Node, error) {
+	// Try embedding-based similarity first if available
+	if idx := tm.store.EmbeddingIndex(); idx != nil {
+		similar, err := tm.findSimilarByEmbedding(ctx, idx, content, nodeType)
+		if err != nil {
+			tm.logger.Debug("embedding search failed, falling back to content search",
+				"error", err)
+		} else if similar != nil {
+			return similar, nil
+		}
+	}
+
+	// Fallback to content-based search
 	results, err := tm.store.SearchByContent(ctx, content, hypergraph.SearchOptions{
 		Types: []hypergraph.NodeType{nodeType},
 		Tiers: []hypergraph.Tier{hypergraph.TierTask},
@@ -451,11 +464,45 @@ func (tm *TaskMemory) findSimilar(ctx context.Context, content string, nodeType 
 		return nil, err
 	}
 
-	// For now, require exact match
-	// TODO: Implement embedding-based similarity
+	// Check for exact match in content search results
 	for _, r := range results {
 		if r.Node.Content == content {
 			return r.Node, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// findSimilarByEmbedding uses the embedding index to find semantically similar nodes.
+func (tm *TaskMemory) findSimilarByEmbedding(ctx context.Context, idx *embeddings.Index, content string, nodeType hypergraph.NodeType) (*hypergraph.Node, error) {
+	// Search for similar content using embeddings
+	results, err := idx.Search(ctx, content, 10)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check results for matches above threshold
+	for _, r := range results {
+		if float64(r.Similarity) < tm.config.SimilarityThreshold {
+			// Results are sorted by similarity, so we can stop early
+			break
+		}
+
+		// Get the full node to check type and tier
+		node, err := tm.store.GetNode(ctx, r.NodeID)
+		if err != nil || node == nil {
+			continue
+		}
+
+		// Check if node matches our criteria
+		if node.Type == nodeType && node.Tier == hypergraph.TierTask {
+			tm.logger.Debug("found similar node via embedding",
+				"node_id", node.ID,
+				"similarity", r.Similarity,
+				"threshold", tm.config.SimilarityThreshold,
+			)
+			return node, nil
 		}
 	}
 

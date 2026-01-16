@@ -219,14 +219,21 @@ func (c *Consolidator) processPattern(ctx context.Context, pattern *LearnedPatte
 	newRate := c.calculateDecay(pattern.SuccessRate, pattern.LastUsed, pattern.UsageCount)
 
 	if newRate < c.cfg.MinConfidence {
-		// Note: Would need DeletePattern method
-		c.logger.Debug("would prune pattern", "id", pattern.ID, "name", pattern.Name)
+		if err := c.store.DeletePattern(ctx, pattern.ID); err != nil {
+			c.logger.Debug("failed to prune pattern", "id", pattern.ID, "error", err)
+		} else {
+			c.logger.Debug("pruned pattern", "id", pattern.ID, "name", pattern.Name)
+		}
 		return true
 	}
 
 	if newRate != pattern.SuccessRate {
-		// Note: Would need UpdatePattern method
-		c.logger.Debug("would decay pattern", "id", pattern.ID, "old", pattern.SuccessRate, "new", newRate)
+		pattern.SuccessRate = newRate
+		if err := c.store.UpdatePattern(ctx, pattern); err != nil {
+			c.logger.Debug("failed to decay pattern", "id", pattern.ID, "error", err)
+		} else {
+			c.logger.Debug("decayed pattern", "id", pattern.ID, "old", pattern.SuccessRate, "new", newRate)
+		}
 		return true
 	}
 
@@ -244,8 +251,22 @@ func (c *Consolidator) processConstraint(ctx context.Context, constraint *Learne
 	newSeverity := c.calculateDecay(constraint.Severity, constraint.LastTriggered, constraint.ViolationCount)
 
 	if newSeverity < c.cfg.MinConfidence/2 { // Constraints have lower prune threshold
-		// Note: Would need DeleteConstraint method
-		c.logger.Debug("would prune constraint", "id", constraint.ID)
+		if err := c.store.DeleteConstraint(ctx, constraint.ID); err != nil {
+			c.logger.Debug("failed to prune constraint", "id", constraint.ID, "error", err)
+		} else {
+			c.logger.Debug("pruned constraint", "id", constraint.ID)
+		}
+		return true
+	}
+
+	// Update constraint with decayed severity if changed significantly
+	if newSeverity < constraint.Severity*0.9 { // Only update if decayed by more than 10%
+		constraint.Severity = newSeverity
+		if err := c.store.UpdateConstraint(ctx, constraint); err != nil {
+			c.logger.Debug("failed to decay constraint", "id", constraint.ID, "error", err)
+		} else {
+			c.logger.Debug("decayed constraint", "id", constraint.ID, "new_severity", newSeverity)
+		}
 		return true
 	}
 
