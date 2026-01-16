@@ -331,9 +331,11 @@ func (m *LifecycleManager) createSessionSummary(ctx context.Context, duration ti
 	}
 
 	// Store as experience node with subtype "session_summary"
+	// [SPEC-09.02] Session summaries are long-term knowledge - store directly
+	// to TierLongterm so they're immediately available for ResumeSession queries.
 	node := hypergraph.NewNode(hypergraph.NodeTypeExperience, summary.Summary)
 	node.Subtype = "session_summary"
-	node.Tier = hypergraph.TierSession // Will be promoted to longterm
+	node.Tier = hypergraph.TierLongterm
 	node.Confidence = 1.0
 
 	metadataBytes, err := json.Marshal(summary)

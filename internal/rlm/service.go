@@ -15,6 +15,7 @@ import (
 	"github.com/rand/recurse/internal/rlm/checkpoint"
 	"github.com/rand/recurse/internal/rlm/compress"
 	"github.com/rand/recurse/internal/rlm/meta"
+	"github.com/rand/recurse/internal/rlm/orchestrator"
 	"github.com/rand/recurse/internal/rlm/repl"
 	"github.com/rand/recurse/internal/tui/components/dialogs/rlmtrace"
 )
@@ -261,6 +262,10 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		wrapperConfig.CompressionConfig = &config.Compression
 	}
 	svc.wrapper = NewWrapper(svc, wrapperConfig)
+
+	// Wire ContextPreparer to orchestrator.Core for context externalization [SPEC-09.06]
+	// This enables the orchestrator to use the wrapper for context preparation.
+	controller.Core().SetContextPreparer(&wrapperContextPreparer{wrapper: svc.wrapper})
 
 	// Wire up lifecycle callbacks for statistics
 	lifecycle.OnTaskComplete(func(result *evolution.LifecycleResult) {
@@ -1064,4 +1069,37 @@ func (s *Service) UpdateBudgetLimits(limits budget.Limits) {
 	if s.budgetMgr != nil {
 		s.budgetMgr.UpdateLimits(limits)
 	}
+}
+
+// wrapperContextPreparer adapts the Wrapper to the orchestrator.ContextPreparer interface.
+// [SPEC-09.06] This allows the orchestrator.Core to use the wrapper for context preparation.
+type wrapperContextPreparer struct {
+	wrapper *Wrapper
+}
+
+// PrepareContext implements orchestrator.ContextPreparer.
+func (w *wrapperContextPreparer) PrepareContext(ctx context.Context, task string, contextTokens int) (*orchestrator.PreparedContext, error) {
+	if w.wrapper == nil {
+		return nil, fmt.Errorf("wrapper not initialized")
+	}
+
+	// Call the wrapper's PrepareContext with task as prompt and no additional contexts
+	prepared, err := w.wrapper.PrepareContext(ctx, task, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert PreparedPrompt to orchestrator.PreparedContext
+	result := &orchestrator.PreparedContext{
+		Mode:         string(prepared.Mode),
+		SystemPrompt: prepared.SystemPrompt,
+	}
+
+	// Check if context was externalized (loaded into REPL)
+	if prepared.LoadedContext != nil {
+		result.Externalized = true
+		result.ExternalizedTokens = prepared.LoadedContext.TotalTokens
+	}
+
+	return result, nil
 }
