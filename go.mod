@@ -3,6 +3,7 @@ module github.com/rand/recurse
 go 1.25.5
 
 require (
+	github.com/rand/rlm-core/go/rlmcore v0.0.0
 	charm.land/bubbles/v2 v2.0.0-rc.1.0.20260109112849-ae99f46cec66
 	charm.land/bubbletea/v2 v2.0.0-rc.2.0.20251216153312-819e2e89c62e
 	charm.land/fantasy v0.6.0
@@ -188,3 +189,5 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	pgregory.net/rapid v1.2.0 // indirect
 )
+
+replace github.com/rand/rlm-core/go/rlmcore => /Users/rand/src/loop/rlm-core/go/rlmcore
