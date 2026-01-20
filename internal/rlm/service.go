@@ -137,12 +137,15 @@ type Service struct {
 	mu sync.RWMutex
 
 	// Core components
-	store            *hypergraph.Store
-	memoryBridge     *RLMCoreMemoryBridge      // optional rlm-core memory integration
-	trajectoryBridge *RLMCoreTrajectoryBridge  // optional rlm-core trajectory integration
-	replBridge       *RLMCoreReplBridge        // optional rlm-core REPL integration
-	epistemicBridge  *RLMCoreEpistemicBridge   // optional rlm-core epistemic verification
-	controller       *Controller
+	store             *hypergraph.Store
+	memoryBridge      *RLMCoreMemoryBridge       // optional rlm-core memory integration
+	trajectoryBridge  *RLMCoreTrajectoryBridge   // optional rlm-core trajectory integration
+	replBridge        *RLMCoreReplBridge         // optional rlm-core REPL integration
+	epistemicBridge   *RLMCoreEpistemicBridge    // optional rlm-core epistemic verification
+	reasoningBridge   *RLMCoreReasoningBridge    // optional rlm-core reasoning traces (Phase 7)
+	orchestratorBridge *RLMCoreOrchestratorBridge // optional rlm-core orchestrator config (Phase 8)
+	costBridge        *RLMCoreCostBridge          // optional rlm-core cost tracking (Phase 9)
+	controller        *Controller
 	lifecycle       *evolution.LifecycleManager
 	metaEvolution   *evolution.MetaEvolutionManager // meta-evolution for schema adaptation
 	tracer          traceRecorder
@@ -253,6 +256,35 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		// Non-fatal - continue with Go hallucination implementation
 	}
 
+	// Initialize rlm-core reasoning bridge if available (RLM_USE_CORE=true)
+	// This provides Deciduous-style reasoning traces for provenance tracking.
+	var reasoningBridge *RLMCoreReasoningBridge
+	if config.StorePath != "" {
+		reasoningBridge, err = NewRLMCoreReasoningBridgeWithStore(config.StorePath + ".reasoning")
+	} else {
+		reasoningBridge, err = NewRLMCoreReasoningBridge()
+	}
+	if err != nil {
+		slog.Warn("rlm-core reasoning bridge initialization failed", "error", err)
+		// Non-fatal - continue without reasoning traces
+	}
+
+	// Initialize rlm-core orchestrator bridge if available (RLM_USE_CORE=true)
+	// This provides shared orchestrator configuration and mode selection.
+	orchestratorBridge, err := NewRLMCoreOrchestratorBridge()
+	if err != nil {
+		slog.Warn("rlm-core orchestrator bridge initialization failed", "error", err)
+		// Non-fatal - continue with Go orchestrator
+	}
+
+	// Initialize rlm-core cost bridge if available (RLM_USE_CORE=true)
+	// This provides shared cost tracking and calculation.
+	costBridge, err := NewRLMCoreCostBridge()
+	if err != nil {
+		slog.Warn("rlm-core cost bridge initialization failed", "error", err)
+		// Non-fatal - continue with Go budget manager
+	}
+
 	// Create lifecycle manager
 	lifecycle, err := evolution.NewLifecycleManager(store, config.Lifecycle)
 	if err != nil {
@@ -350,12 +382,15 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	}
 
 	svc := &Service{
-		store:            store,
-		memoryBridge:     memoryBridge,
-		trajectoryBridge: trajectoryBridge,
-		replBridge:       replBridge,
-		epistemicBridge:  epistemicBridge,
-		controller:       controller,
+		store:              store,
+		memoryBridge:       memoryBridge,
+		trajectoryBridge:   trajectoryBridge,
+		replBridge:         replBridge,
+		epistemicBridge:    epistemicBridge,
+		reasoningBridge:    reasoningBridge,
+		orchestratorBridge: orchestratorBridge,
+		costBridge:         costBridge,
+		controller:         controller,
 		lifecycle:       lifecycle,
 		metaEvolution:   metaEvolution,
 		tracer:          tracer,
@@ -553,6 +588,21 @@ func (s *Service) Stop() error {
 		s.replBridge.Close()
 	}
 
+	// Close rlm-core reasoning bridge if enabled
+	if s.reasoningBridge != nil {
+		s.reasoningBridge.Close()
+	}
+
+	// Close rlm-core orchestrator bridge if enabled
+	if s.orchestratorBridge != nil {
+		s.orchestratorBridge.Close()
+	}
+
+	// Close rlm-core cost bridge if enabled
+	if s.costBridge != nil {
+		s.costBridge.Close()
+	}
+
 	// Close store
 	if err := s.store.Close(); err != nil {
 		return fmt.Errorf("close store: %w", err)
@@ -665,6 +715,24 @@ func (s *Service) ReplBridge() *RLMCoreReplBridge {
 // EpistemicBridge returns the rlm-core epistemic bridge, or nil if not available.
 func (s *Service) EpistemicBridge() *RLMCoreEpistemicBridge {
 	return s.epistemicBridge
+}
+
+// ReasoningBridge returns the rlm-core reasoning bridge if enabled.
+// Returns nil if rlm-core is not available.
+func (s *Service) ReasoningBridge() *RLMCoreReasoningBridge {
+	return s.reasoningBridge
+}
+
+// OrchestratorBridge returns the rlm-core orchestrator bridge if enabled.
+// Returns nil if rlm-core is not available.
+func (s *Service) OrchestratorBridge() *RLMCoreOrchestratorBridge {
+	return s.orchestratorBridge
+}
+
+// CostBridge returns the rlm-core cost tracking bridge if enabled.
+// Returns nil if rlm-core is not available.
+func (s *Service) CostBridge() *RLMCoreCostBridge {
+	return s.costBridge
 }
 
 // LifecycleManager returns the lifecycle manager for direct access.
