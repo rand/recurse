@@ -138,6 +138,7 @@ type Service struct {
 
 	// Core components
 	store           *hypergraph.Store
+	memoryBridge    *RLMCoreMemoryBridge             // optional rlm-core memory integration
 	controller      *Controller
 	lifecycle       *evolution.LifecycleManager
 	metaEvolution   *evolution.MetaEvolutionManager // meta-evolution for schema adaptation
@@ -189,6 +190,14 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	store, err := hypergraph.NewStore(storeOpts)
 	if err != nil {
 		return nil, fmt.Errorf("create store: %w", err)
+	}
+
+	// Initialize rlm-core memory bridge if available (RLM_USE_CORE=true)
+	// This provides optional integration with rlm-core's MemoryStore for
+	// specific operations while the primary hypergraph.Store handles the full feature set.
+	memoryBridge := NewRLMCoreMemoryBridge(config.StorePath + ".rlmcore")
+	if memoryBridge != nil {
+		slog.Info("rlm-core memory bridge initialized")
 	}
 
 	// Create meta-controller
@@ -316,6 +325,7 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 
 	svc := &Service{
 		store:           store,
+		memoryBridge:    memoryBridge,
 		controller:      controller,
 		lifecycle:       lifecycle,
 		metaEvolution:   metaEvolution,
@@ -494,6 +504,11 @@ func (s *Service) Stop() error {
 		}
 	}
 
+	// Close rlm-core memory bridge if enabled
+	if s.memoryBridge != nil {
+		s.memoryBridge.Free()
+	}
+
 	// Close store
 	if err := s.store.Close(); err != nil {
 		return fmt.Errorf("close store: %w", err)
@@ -583,6 +598,12 @@ func (s *Service) TraceProvider() rlmtrace.TraceProvider {
 // Store returns the hypergraph store for direct access.
 func (s *Service) Store() *hypergraph.Store {
 	return s.store
+}
+
+// MemoryBridge returns the rlm-core memory bridge, or nil if not enabled.
+// The bridge is enabled when RLM_USE_CORE=true and rlm-core is available.
+func (s *Service) MemoryBridge() *RLMCoreMemoryBridge {
+	return s.memoryBridge
 }
 
 // LifecycleManager returns the lifecycle manager for direct access.
