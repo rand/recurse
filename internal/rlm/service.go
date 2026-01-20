@@ -141,6 +141,7 @@ type Service struct {
 	memoryBridge     *RLMCoreMemoryBridge      // optional rlm-core memory integration
 	trajectoryBridge *RLMCoreTrajectoryBridge  // optional rlm-core trajectory integration
 	replBridge       *RLMCoreReplBridge        // optional rlm-core REPL integration
+	epistemicBridge  *RLMCoreEpistemicBridge   // optional rlm-core epistemic verification
 	controller       *Controller
 	lifecycle       *evolution.LifecycleManager
 	metaEvolution   *evolution.MetaEvolutionManager // meta-evolution for schema adaptation
@@ -244,6 +245,14 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		// Non-fatal - continue with Go REPL implementation
 	}
 
+	// Initialize rlm-core epistemic bridge if available (RLM_USE_CORE=true)
+	// This provides claim extraction, evidence scrubbing, and KL divergence functions.
+	epistemicBridge, err := NewRLMCoreEpistemicBridge()
+	if err != nil {
+		slog.Warn("rlm-core epistemic bridge initialization failed", "error", err)
+		// Non-fatal - continue with Go hallucination implementation
+	}
+
 	// Create lifecycle manager
 	lifecycle, err := evolution.NewLifecycleManager(store, config.Lifecycle)
 	if err != nil {
@@ -345,6 +354,7 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		memoryBridge:     memoryBridge,
 		trajectoryBridge: trajectoryBridge,
 		replBridge:       replBridge,
+		epistemicBridge:  epistemicBridge,
 		controller:       controller,
 		lifecycle:       lifecycle,
 		metaEvolution:   metaEvolution,
@@ -533,6 +543,11 @@ func (s *Service) Stop() error {
 		s.trajectoryBridge.Close()
 	}
 
+	// Close rlm-core epistemic bridge if enabled
+	if s.epistemicBridge != nil {
+		s.epistemicBridge.Close()
+	}
+
 	// Close rlm-core REPL bridge if enabled
 	if s.replBridge != nil {
 		s.replBridge.Close()
@@ -645,6 +660,11 @@ func (s *Service) TrajectoryBridge() *RLMCoreTrajectoryBridge {
 // Returns nil if rlm-core is not available.
 func (s *Service) ReplBridge() *RLMCoreReplBridge {
 	return s.replBridge
+}
+
+// EpistemicBridge returns the rlm-core epistemic bridge, or nil if not available.
+func (s *Service) EpistemicBridge() *RLMCoreEpistemicBridge {
+	return s.epistemicBridge
 }
 
 // LifecycleManager returns the lifecycle manager for direct access.
