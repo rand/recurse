@@ -24,6 +24,9 @@ type Wrapper struct {
 	classifier    *TaskClassifier
 	llmClassifier *LLMClassifier
 
+	// rlm-core activation checker (optional, used when RLM_USE_CORE=true)
+	rlmcoreActivation *RLMCoreActivationCheck
+
 	// Proactive computation advisor
 	computationAdvisor *ComputationAdvisor
 
@@ -144,6 +147,12 @@ func NewWrapper(svc *Service, cfg WrapperConfig) *Wrapper {
 	// Initialize classifier unless disabled
 	if !cfg.DisableClassifier {
 		w.classifier = NewTaskClassifier()
+	}
+
+	// Initialize rlm-core activation check if available
+	w.rlmcoreActivation = NewRLMCoreActivationCheck()
+	if w.rlmcoreActivation != nil {
+		slog.Info("rlm-core activation check enabled")
 	}
 
 	// Initialize computation advisor for proactive REPL suggestions
@@ -411,6 +420,29 @@ func (w *Wrapper) selectModeDetailed(ctx context.Context, query string, totalTok
 		slog.Debug("Mode selection: Direct (REPL unavailable)",
 			"total_tokens", totalTokens)
 		return result
+	}
+
+	// Check rlm-core activation if available (RLM_USE_CORE=true)
+	if w.rlmcoreActivation != nil {
+		shouldActivate, score, reason := w.rlmcoreActivation.ShouldActivate(query)
+		if shouldActivate && score >= 70 {
+			// rlm-core strongly recommends RLM mode
+			result.mode = ModeRLM
+			result.reason = fmt.Sprintf("rlm-core activation: %s (score=%d)", reason, score)
+			slog.Debug("Mode selection: rlm-core activation",
+				"mode", ModeRLM,
+				"score", score,
+				"reason", reason,
+				"total_tokens", totalTokens)
+			return result
+		}
+		// Log rlm-core signal even if not decisive
+		if score > 0 {
+			slog.Debug("rlm-core activation signal",
+				"should_activate", shouldActivate,
+				"score", score,
+				"reason", reason)
+		}
 	}
 
 	// Use classification if available and confident
