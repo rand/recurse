@@ -137,9 +137,11 @@ type Service struct {
 	mu sync.RWMutex
 
 	// Core components
-	store           *hypergraph.Store
-	memoryBridge    *RLMCoreMemoryBridge             // optional rlm-core memory integration
-	controller      *Controller
+	store            *hypergraph.Store
+	memoryBridge     *RLMCoreMemoryBridge      // optional rlm-core memory integration
+	trajectoryBridge *RLMCoreTrajectoryBridge  // optional rlm-core trajectory integration
+	replBridge       *RLMCoreReplBridge        // optional rlm-core REPL integration
+	controller       *Controller
 	lifecycle       *evolution.LifecycleManager
 	metaEvolution   *evolution.MetaEvolutionManager // meta-evolution for schema adaptation
 	tracer          traceRecorder
@@ -226,6 +228,21 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 		tracer = NewTraceProvider(config.MaxTraceEvents)
 	}
 	controller.SetTracer(tracer)
+
+	// Initialize rlm-core trajectory bridge if available (RLM_USE_CORE=true)
+	// This provides integration with rlm-core's TrajectoryEvent for the TUI trace view.
+	trajectoryBridge := NewRLMCoreTrajectoryBridge(tracer)
+	if trajectoryBridge != nil {
+		slog.Info("rlm-core trajectory bridge initialized")
+	}
+
+	// Initialize rlm-core REPL bridge if available (RLM_USE_CORE=true)
+	// This provides Python code execution via rlm-core's ReplPool.
+	replBridge, err := NewRLMCoreReplBridge(4) // Pool size of 4
+	if err != nil {
+		slog.Warn("rlm-core REPL bridge initialization failed", "error", err)
+		// Non-fatal - continue with Go REPL implementation
+	}
 
 	// Create lifecycle manager
 	lifecycle, err := evolution.NewLifecycleManager(store, config.Lifecycle)
@@ -324,9 +341,11 @@ func NewService(llmClient meta.LLMClient, config ServiceConfig) (*Service, error
 	}
 
 	svc := &Service{
-		store:           store,
-		memoryBridge:    memoryBridge,
-		controller:      controller,
+		store:            store,
+		memoryBridge:     memoryBridge,
+		trajectoryBridge: trajectoryBridge,
+		replBridge:       replBridge,
+		controller:       controller,
 		lifecycle:       lifecycle,
 		metaEvolution:   metaEvolution,
 		tracer:          tracer,
@@ -509,6 +528,16 @@ func (s *Service) Stop() error {
 		s.memoryBridge.Free()
 	}
 
+	// Close rlm-core trajectory bridge if enabled
+	if s.trajectoryBridge != nil {
+		s.trajectoryBridge.Close()
+	}
+
+	// Close rlm-core REPL bridge if enabled
+	if s.replBridge != nil {
+		s.replBridge.Close()
+	}
+
 	// Close store
 	if err := s.store.Close(); err != nil {
 		return fmt.Errorf("close store: %w", err)
@@ -604,6 +633,18 @@ func (s *Service) Store() *hypergraph.Store {
 // The bridge is enabled when RLM_USE_CORE=true and rlm-core is available.
 func (s *Service) MemoryBridge() *RLMCoreMemoryBridge {
 	return s.memoryBridge
+}
+
+// TrajectoryBridge returns the rlm-core trajectory bridge if enabled.
+// Returns nil if rlm-core is not available.
+func (s *Service) TrajectoryBridge() *RLMCoreTrajectoryBridge {
+	return s.trajectoryBridge
+}
+
+// ReplBridge returns the rlm-core REPL bridge if enabled.
+// Returns nil if rlm-core is not available.
+func (s *Service) ReplBridge() *RLMCoreReplBridge {
+	return s.replBridge
 }
 
 // LifecycleManager returns the lifecycle manager for direct access.
