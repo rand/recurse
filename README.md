@@ -1,6 +1,8 @@
-# Recurse
+# Recurse (rlm-core branch)
 
 > A recursive language model (RLM) system with hypergraph memory for agentic coding.
+
+**Branch: `rlm-core-migration`** - This branch uses [rlm-core](https://github.com/rand/loop) as the unified RLM orchestration library, providing shared implementations with [rlm-claude-code](https://github.com/rand/rlm-claude-code).
 
 Recurse is a personal agentic coding environment that extends [Crush](https://github.com/charmbracelet/crush) with:
 
@@ -13,9 +15,28 @@ Recurse is a personal agentic coding environment that extends [Crush](https://gi
 ### Prerequisites
 
 - **Go 1.22+**: `brew install go` or [golang.org](https://golang.org/dl/)
+- **Rust 1.75+**: `rustup update stable` (for building rlm-core)
 - **Python 3.11+**: `brew install python@3.11` or [python.org](https://python.org)
 - **uv** (Python package manager): `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **OpenRouter API Key**: Get one at [openrouter.ai](https://openrouter.ai)
+
+### Building rlm-core (Required)
+
+This branch requires the [rlm-core](https://github.com/rand/loop) static library:
+
+```bash
+# Clone rlm-core (if not already present)
+git clone https://github.com/rand/loop.git ~/src/loop
+
+# Build the static library (without Python feature for Go CGO)
+cd ~/src/loop/rlm-core
+cargo build --release --lib --no-default-features --features tokio-runtime
+
+# Verify the library exists
+ls -la target/release/librlm_core.a
+```
+
+The Go bindings expect the library at `~/src/loop/rlm-core/target/release/librlm_core.a`. If you have rlm-core elsewhere, update the `LDFLAGS` path in `internal/rlm/rlmcore/rlmcore.go`.
 
 ### Installation
 
@@ -136,6 +157,39 @@ memory:
 │  ├─ Code Understanding (LSP/Tree-sitter)                │
 │  └─ LLM Interface (Fantasy provider abstraction)        │
 └─────────────────────────────────────────────────────────┘
+```
+
+## rlm-core Integration
+
+This branch replaces the Go-native RLM implementation with bindings to the unified [rlm-core](https://github.com/rand/loop) Rust library.
+
+### What's Different from Mainline
+
+| Component | Mainline | rlm-core Branch |
+|-----------|----------|-----------------|
+| Pattern Classifier | Go implementation | Rust via CGO |
+| Memory Store | Go + SQLite | Rust + SQLite via CGO |
+| Trajectory Events | Go types | Rust types via CGO |
+| REPL | Go subprocess mgmt | Go subprocess mgmt (unchanged) |
+
+### Benefits
+
+- **Consistency**: Same classification logic as rlm-claude-code
+- **Performance**: Rust pattern matching is 10-50x faster
+- **Shared Memory**: Same hypergraph schema across tools
+- **Single Source**: Bug fixes benefit both projects
+
+### CGO Bindings
+
+The Go bindings are in `internal/rlm/rlmcore/` and wrap the C FFI from rlm-core:
+
+```go
+import "github.com/rand/recurse/internal/rlm/rlmcore"
+
+classifier := rlmcore.NewPatternClassifier()
+defer classifier.Free()
+
+decision := classifier.ShouldActivate(query, ctx)
 ```
 
 ## RLM Mode: When to Use
